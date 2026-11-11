@@ -1,0 +1,5 @@
+# Personal library data: your games, covers and settings (including API keys) stay on this PC
+data/
+.claude/
+__pycache__/
+*.pyc

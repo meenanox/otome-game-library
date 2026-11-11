@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en" data-theme="pastel">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My Games Library</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&display=swap">
+  <link rel="stylesheet" href="app.css">
+  <script>
+    // Apply the saved theme before first paint
+    try {
+      const t = localStorage.getItem("theme");
+      document.documentElement.dataset.theme = t || (matchMedia("(prefers-color-scheme: dark)").matches ? "noir" : "pastel");
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="brand">My Library <small>otome · BL · josei-muke</small></h1>
+    <input id="search" type="search" placeholder="Search titles, brands, characters, seiyuu…" autocomplete="off">
+    <select id="sort" aria-label="Sort by">
+      <option value="title">Title A–Z</option>
+      <option value="added">Recently added</option>
+      <option value="played">Recently played</option>
+      <option value="released">Release date</option>
+      <option value="rating">Rating</option>
+    </select>
+    <div class="top-actions">
+      <button id="themeBtn" class="ghost" title="Switch theme">◐ <span>Theme</span></button>
+      <button id="settingsBtn" class="ghost" title="Emulators and itch.io key">⚙ <span>Settings</span></button>
+      <button id="studyBtn" class="ghost" title="Japanese difficulty and reading progress">学 <span>Study</span></button>
+      <button id="itchBtn" class="ghost" title="Import your itch.io library">⇩ <span>itch.io</span></button>
+      <button id="scanBtn" class="ghost" title="Find emulated games in your folders">⌕ <span>Scan folders</span></button>
+      <button id="addBtn" class="primary">＋ Add game</button>
+    </div>
+  </header>
+
+  <nav class="filters" id="filters"></nav>
+
+  <main>
+    <p id="summary" class="summary"></p>
+    <section id="grid" class="grid"></section>
+    <p id="empty" class="empty" hidden>No games match these filters.</p>
+  </main>
+
+  <!-- Game details -->
+  <dialog id="detailDialog" class="sheet wide"></dialog>
+
+  <!-- Add / edit -->
+  <dialog id="editDialog" class="sheet wide">
+    <form id="editForm" method="dialog">
+      <header class="sheet-head">
+        <h2 id="editTitle">Add game</h2>
+        <button type="button" class="icon" data-close aria-label="Close">✕</button>
+      </header>
+
+      <div class="vndb-box">
+        <label for="vndbQuery">Find on VNDB</label>
+        <div class="row">
+          <input id="vndbQuery" type="search" placeholder="English, romaji or Japanese title">
+          <button type="button" id="vndbSearchBtn">Search</button>
+        </div>
+        <div id="vndbResults" class="vndb-results"></div>
+      </div>
+
+      <div class="form-grid">
+        <label class="span2">Title <input name="title" required></label>
+        <label class="span2">Original title <input name="originalTitle" placeholder="日本語タイトル"></label>
+        <label>Category
+          <select name="category">
+            <option value="otome">Otome</option>
+            <option value="bl">BL</option>
+            <option value="josei">Josei-muke</option>
+          </select>
+        </label>
+        <label>Platform
+          <select name="platform">
+            <option value="pc">PC</option>
+            <option value="psp">PSP</option>
+            <option value="vita">PS Vita</option>
+            <option value="switch">Switch</option>
+            <option value="ps4">PS4</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>Brand <input name="brand"></label>
+        <label>Released <input name="released" placeholder="YYYY-MM-DD"></label>
+
+        <fieldset class="span2 format-pick">
+          <legend>How do you own / play it?</legend>
+          <label><input type="radio" name="format" value="pc" checked> PC install</label>
+          <label><input type="radio" name="format" value="emulated"> Emulator</label>
+          <label><input type="radio" name="format" value="physical"> Physical copy only</label>
+        </fieldset>
+
+        <label class="span2" data-for-format="pc">Executable or launcher URL
+          <input name="exePath" placeholder="D:\Games\Title\game.exe  or  steam://rungameid/123">
+          <small>Tip: in Explorer, right-click the .exe → <b>Copy as path</b>, then paste here.</small>
+        </label>
+        <label data-for-format="emulated">Emulator <select name="emulator" id="emulatorSelect"></select></label>
+        <label data-for-format="emulated">Game file (ISO / folder / NSP)
+          <input name="romPath" placeholder="D:\ROMs\PSP\title.iso">
+        </label>
+
+        <label>Language <input name="language" placeholder="English / Japanese / fan TL"></label>
+        <label>Status
+          <select name="status">
+            <option value="unplayed">Unplayed</option>
+            <option value="playing">Playing</option>
+            <option value="completed">Completed</option>
+            <option value="dropped">Dropped</option>
+          </select>
+        </label>
+        <label class="span2">Cover image URL <input name="cover" placeholder="Filled by VNDB, or paste an image URL"></label>
+        <label class="span2">Notes <textarea name="notes" rows="2"></textarea></label>
+        <label class="span2">Description <textarea name="description" rows="3"></textarea></label>
+      </div>
+
+      <section class="routes-edit">
+        <div class="row between">
+          <h3>Love interests / routes</h3>
+          <button type="button" id="addRouteBtn" class="ghost">＋ Add route</button>
+        </div>
+        <div id="routesEdit"></div>
+      </section>
+
+      <footer class="sheet-foot">
+        <button type="button" data-close class="ghost">Cancel</button>
+        <button type="submit" class="primary" id="saveBtn">Save</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Settings -->
+  <dialog id="settingsDialog" class="sheet">
+    <form id="settingsForm" method="dialog">
+      <header class="sheet-head">
+        <h2>Settings</h2>
+        <button type="button" class="icon" data-close aria-label="Close">✕</button>
+      </header>
+      <h3 class="settings-h">Emulators</h3>
+      <p class="muted settings-p">Paste the path to each emulator's .exe. <code>{rom}</code> in the arguments is replaced by the game file.
+        Folders listed under each emulator are searched by <b>Scan folders</b>.</p>
+      <div id="emulatorRows"></div>
+      <h3 class="settings-h">Japanese study</h3>
+      <div class="emu-row">
+        <label>Your reading speed (characters per hour)
+          <input id="readingSpeed" type="number" min="1000" max="200000" step="500" placeholder="14000">
+        </label>
+        <small>Used for every "hours" figure. Leave it at 14,000 if unsure; native readers are often 20,000+, and
+          learners 3,000–8,000. Time a few minutes of reading and compare against the characters on screen.</small>
+      </div>
+      <div class="emu-row">
+        <label>Jiten API key (optional)
+          <input id="jitenKey" type="password" autocomplete="off" placeholder="ak_…">
+        </label>
+        <small id="jitenKeyState"></small>
+        <small>Shows how much of each game's text you already know. Create one in your Jiten account settings. The library only
+          reads from Jiten with it, and it's kept only in <code>data/settings.json</code> on this PC.</small>
+        <label class="inline" id="jitenKeyClearWrap"><input type="checkbox" id="jitenKeyClear"> Remove the saved key</label>
+      </div>
+      <div class="emu-row">
+        <label>Anki export: note type <input id="ankiNote" placeholder="Lapis"></label>
+        <label>Anki export: deck <input id="ankiDeck" placeholder="MiningGroups::MINING"></label>
+        <label>Anki export: tags <input id="ankiTags" placeholder="yomitan"></label>
+        <small>Used by "Download for Anki" in a game's Study tab. Defaults match your Yomitan Lapis setup. The game's name is added as a tag too.</small>
+      </div>
+      <h3 class="settings-h">itch.io</h3>
+      <div class="emu-row">
+        <input id="itchKey" type="password" autocomplete="off" placeholder="Paste your API key">
+        <small id="itchKeyState"></small>
+        <small>Create one at <a href="https://itch.io/user/settings/api-keys" target="_blank" rel="noopener">itch.io → Settings → API keys ↗</a>.
+          It's kept only in <code>data/settings.json</code> on this PC.</small>
+        <label class="inline" id="itchKeyClearWrap"><input type="checkbox" id="itchKeyClear"> Remove the saved key</label>
+      </div>
+      <footer class="sheet-foot">
+        <button type="button" data-close class="ghost">Cancel</button>
+        <button type="submit" class="primary">Save settings</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- itch.io import -->
+  <dialog id="itchDialog" class="sheet wide">
+    <header class="sheet-head">
+      <h2 id="importTitle">Import from itch.io</h2>
+      <button type="button" class="icon" data-close aria-label="Close">✕</button>
+    </header>
+    <div id="itchBody" class="itch-body"></div>
+    <footer id="itchFoot" class="sheet-foot"></footer>
+  </dialog>
+
+  <!-- Japanese study dashboard -->
+  <dialog id="studyDialog" class="sheet wide">
+    <header class="sheet-head">
+      <h2>Japanese study</h2>
+      <button type="button" class="icon" data-close aria-label="Close">✕</button>
+    </header>
+    <div id="studyBody" class="study-body"></div>
+    <footer class="sheet-foot"><small class="muted spacer">Difficulty, length and word data from <a href="https://jiten.moe" target="_blank" rel="noopener">jiten.moe</a>. Reading time is an estimate.</small></footer>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
