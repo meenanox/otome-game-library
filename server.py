@@ -30,7 +30,7 @@ CHARACTERS_FILE = DATA / "characters.json"  # VNDB character id -> record (fetch
 STAFF_FILE = DATA / "staff.json"            # VNDB staff id -> voice actor record
 
 HOST = "127.0.0.1"
-PORT = int(os.environ.get("PORT", 8642))  # 8765 is taken by AnkiConnect
+PORT = int(os.environ.get("PORT", 9999))  # 8765 is taken by AnkiConnect
 ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 VNDB_API = "https://api.vndb.org/kana"
 USER_AGENT = "MyGamesLibrary/0.1 (local personal catalogue)"

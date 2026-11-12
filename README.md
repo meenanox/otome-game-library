@@ -2,7 +2,7 @@
 
 A local catalogue for owned otome / BL / josei-muke games.
 
-**Start:** double-click `start-library.bat`. It opens http://localhost:8642. Close the console window to stop.
+**Start:** double-click `start-library.bat`. It opens http://localhost:9999. Close the console window to stop.
 
 - `server.py` — local server (Python 3 standard library only, localhost-only)
 - `web/` — the page (`index.html`, `app.css`, `app.js`)
