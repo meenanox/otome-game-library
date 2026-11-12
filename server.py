@@ -820,6 +820,13 @@ def run_characters(scope):
                     mine = [c for c in all_chars.values() if any(x["id"] == g["vndbId"] for x in c["vns"])]
                     g["charIds"] = [c["id"] for c in mine]
                     g["charsFetchedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    if not g.get("routes"):  # games synced from a VNDB list have no routes yet: make them from the love interests
+                        def voice(c):
+                            va = next((x for x in c.get("va", []) if x["vn"] == g["vndbId"]), None)
+                            return (all_staff.get(va["staff"]) or {}).get("original", "") if va else ""
+                        g["routes"] = [{"name": c["name"], "original": c["original"], "seiyuu": voice(c),
+                                        "state": "none", "charId": c["id"]}
+                                       for c in mine if any(x["id"] == g["vndbId"] and x["role"] == "primary" for x in c["vns"])]
                     by_name = {c["name"].casefold(): c["id"] for c in mine}
                     for r in g.get("routes") or []:  # link the old hand-made routes to real characters
                         r.setdefault("charId", by_name.get((r.get("name") or "").casefold(), ""))

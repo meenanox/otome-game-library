@@ -75,7 +75,11 @@ async function saveGame(g) {
   const saved = await api("PUT", `/api/games/${encodeURIComponent(g.id)}`, g);
   replaceGame(saved);
   render();
-  if (currentView !== "library") VIEWS[currentView].render($("#viewHost")); // keep the open page in step with the edit
+  if (currentView !== "library") { // keep the open page in step with the edit, without jumping back to the top
+    const y = scrollY;
+    await VIEWS[currentView].render($("#viewHost"));
+    scrollTo(0, y);
+  }
   return saved;
 }
 
@@ -1415,6 +1419,7 @@ function showView(name) {
   $$("[data-view-of='library']").forEach((el) => { el.hidden = !library; });
   $("#viewHost").hidden = library;
   $("#search").hidden = $("#sort").hidden = !library;
+  $("#viewHost").dataset.view = name;
   if (!library) { $("#viewHost").innerHTML = ""; v.render($("#viewHost")); }
   $$(".nav-item[data-view]").forEach((b) => {
     if (b.dataset.view === name) b.setAttribute("aria-current", "page");
@@ -1520,6 +1525,211 @@ function renderVAs(host) {
   host.querySelector("#vaCount").textContent = `${groups.length} voice actors`;
   host.querySelectorAll("[data-vacat]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.vacat === vaUI.category)));
 }
+
+// ---------- love interests: scores + tier lists ----------
+// A love interest is a route of a game. Its score (0-10) and tier live on the route, a game's tier on the game,
+// so they're saved with the game and need no separate store.
+
+const TIERS = ["S", "A", "B", "C", "D", "F"];
+const TIER_COLOURS = { S: "#c4578a", A: "#c99a3c", B: "#6f9a6f", C: "#8a93b3", D: "#9a8f87", F: "#6d6670" };
+const tierUI = { category: "", size: +(() => { try { return localStorage.getItem("tierSize"); } catch (e) { return 0; } })() || 84 };
+const liUI = { q: "", category: "", sort: "score", unratedOnly: false };
+
+function allLIs() {
+  const out = [];
+  for (const g of state.games) {
+    (g.routes || []).forEach((r, i) => {
+      const c = r.charId && people.chars ? people.chars[r.charId] : null;
+      out.push({ key: `${g.id}|${i}`, g, r, name: r.name, original: r.original, va: r.seiyuu,
+                 image: (c && c.image) || "", score: r.score, tier: r.tier || "" });
+    });
+  }
+  return out;
+}
+
+const portraitHTML = (img, fallback, cls = "") => img
+  ? `<img class="${cls}" src="${esc(img)}" alt="" loading="lazy" data-letter="${esc((fallback || "?")[0])}">`
+  : `<span class="face-txt ${cls}">${esc((fallback || "?")[0])}</span>`;
+
+/** Shared tier board. items: [{key, tier, img, label, sub}]. Drag a card onto a row, or click it for a menu. */
+function renderTierBoard(host, items, { setTier, open }) {
+  const card = (it) => `<div class="tier-card" draggable="true" data-key="${esc(it.key)}" title="${esc(it.label)}${it.sub ? " — " + esc(it.sub) : ""}">
+      ${portraitHTML(it.img, it.label)}</div>`;
+  const rows = [...TIERS, ""].map((t) => `
+    <div class="tier-row" data-tier="${t}">
+      <div class="tier-label" style="background:${t ? TIER_COLOURS[t] : "var(--surface-2)"};${t ? "" : "color:var(--muted)"}">${t || "Unranked"}</div>
+      <div class="tier-items">${items.filter((it) => it.tier === t).map(card).join("")}</div>
+    </div>`).join("");
+  host.innerHTML = `<div class="tier-board" style="--sz:${tierUI.size}px">${rows}</div>`;
+  const byKey = Object.fromEntries(items.map((it) => [it.key, it]));
+  const board = host.querySelector(".tier-board");
+  let dragKey = null;
+  board.ondragstart = (e) => { const c = e.target.closest(".tier-card"); if (c) { dragKey = c.dataset.key; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", dragKey); } };
+  board.ondragover = (e) => { const r = e.target.closest(".tier-row"); if (r && dragKey) { e.preventDefault(); r.classList.add("over"); } };
+  board.ondragleave = (e) => e.target.closest(".tier-row")?.classList.remove("over");
+  board.ondrop = (e) => {
+    const r = e.target.closest(".tier-row");
+    if (!r || !dragKey) return;
+    e.preventDefault();
+    const key = dragKey; dragKey = null;
+    if (byKey[key] && byKey[key].tier !== r.dataset.tier) setTier(byKey[key], r.dataset.tier);
+  };
+  board.ondragend = () => { dragKey = null; board.querySelectorAll(".over").forEach((x) => x.classList.remove("over")); };
+  board.onclick = (e) => {
+    const c = e.target.closest(".tier-card");
+    if (!c) return;
+    const it = byKey[c.dataset.key];
+    const pop = document.createElement("div");
+    pop.className = "tier-pop";
+    pop.innerHTML = `<b>${esc(it.label)}</b>${it.sub ? `<small>${esc(it.sub)}</small>` : ""}
+      <div class="tier-pop-btns">${[...TIERS, ""].map((t) => `<button type="button" data-t="${t}" ${it.tier === t ? "aria-pressed=true" : ""}
+        style="${t ? `background:${TIER_COLOURS[t]};color:#fff` : ""}">${t || "—"}</button>`).join("")}</div>
+      <button type="button" class="ghost" data-open>Open game</button>`;
+    document.body.append(pop);
+    const rect = c.getBoundingClientRect();
+    pop.style.left = `${Math.min(rect.left, innerWidth - pop.offsetWidth - 8)}px`;
+    pop.style.top = `${Math.min(rect.bottom + 6, innerHeight - pop.offsetHeight - 8)}px`;
+    const close = () => { pop.remove(); document.removeEventListener("pointerdown", away, true); };
+    const away = (ev) => { if (!pop.contains(ev.target)) close(); };
+    setTimeout(() => document.addEventListener("pointerdown", away, true));
+    pop.onclick = (ev) => {
+      const b = ev.target.closest("button");
+      if (!b) return;
+      close();
+      if (b.hasAttribute("data-open")) open(it); else setTier(it, b.dataset.t);
+    };
+  };
+}
+
+function tierControls(host, onChange) {
+  host.insertAdjacentHTML("beforeend", `
+    <div class="filters page-filters">
+      <div class="filter-group"><b>Category</b>
+        <button class="chip" data-tcat="" aria-pressed="${!tierUI.category}">All</button>
+        ${Object.entries(LABELS.category).map(([k, l]) => `<button class="chip" data-tcat="${k}" aria-pressed="${tierUI.category === k}">${l}</button>`).join("")}
+      </div>
+      <label class="inline">size <input type="range" id="tierSize" min="48" max="140" step="4" value="${tierUI.size}"> <output>${tierUI.size}px</output></label>
+      <small>Drag a card onto a tier, or click it for a menu.</small>
+    </div>`);
+  host.querySelectorAll("[data-tcat]").forEach((b) => b.onclick = () => { tierUI.category = b.dataset.tcat; onChange(); });
+  const size = host.querySelector("#tierSize");
+  size.oninput = () => { tierUI.size = +size.value; size.nextElementSibling.textContent = `${size.value}px`;
+    host.querySelector(".tier-board")?.style.setProperty("--sz", `${size.value}px`);
+    try { localStorage.setItem("tierSize", size.value); } catch (e) {} };
+}
+
+function tierPage(title, empty, build) {
+  return {
+    async render(host) {
+      host.innerHTML = `<h2 class="page-h">${esc(title)}</h2>`;
+      await loadPeople();
+      if (currentView !== host.dataset.view) return;
+      const draw = () => {
+        host.querySelectorAll(".filters, #tierBoardHost, .empty").forEach((x) => x.remove());
+        tierControls(host, () => { VIEWS[host.dataset.view].render(host); });
+        const board = document.createElement("div");
+        board.id = "tierBoardHost";
+        host.append(board);
+        const items = build();
+        if (!items.length) { board.innerHTML = `<p class="empty">${esc(empty)}</p>`; return; }
+        renderTierBoard(board, items.items || items, items.handlers || {});
+      };
+      draw();
+    },
+  };
+}
+
+VIEWS.litiers = tierPage("LI Tier List", "No love interests yet. Sync your VNDB list and fetch characters in Settings, or add routes to a game.", () => {
+  const list = allLIs().filter((l) => !tierUI.category || l.g.category === tierUI.category);
+  const items = list.map((l) => ({ key: l.key, tier: l.tier, img: l.image || l.g.cover, label: l.name, sub: l.g.title }));
+  const byKey = Object.fromEntries(list.map((l) => [l.key, l]));
+  items.handlers = {
+    setTier: (it, tier) => { const l = byKey[it.key]; l.r.tier = tier; return saveGame(l.g).catch((e) => toast(e.message, "error")); },
+    open: (it) => { detailTab = "overview"; openDetail(byKey[it.key].g.id); },
+  };
+  return items;
+});
+
+VIEWS.gametiers = tierPage("Game Tier List", "No games yet.", () => {
+  const list = state.games.filter((g) => (!tierUI.category || g.category === tierUI.category) && (inDiary(g) || g.tier));
+  const items = list.map((g) => ({ key: g.id, tier: g.tier || "", img: g.cover, label: g.title, sub: LABELS.status[g.status] || "" }));
+  const byKey = Object.fromEntries(list.map((g) => [g.id, g]));
+  items.handlers = {
+    setTier: (it, tier) => { const g = byKey[it.key]; g.tier = tier; return saveGame(g).catch((e) => toast(e.message, "error")); },
+    open: (it) => { detailTab = "overview"; openDetail(it.key); },
+  };
+  return items;
+});
+
+function liCardHTML(l) {
+  return `<article class="li-card" data-key="${esc(l.key)}">
+    <button type="button" class="li-face" data-opengame="${esc(l.g.id)}" title="Open ${esc(l.g.title)}">${portraitHTML(l.image || l.g.cover, l.name)}</button>
+    <div class="li-body">
+      <b>${esc(l.name)}</b>${l.original ? `<small>${esc(l.original)}</small>` : ""}
+      <small>${esc(l.g.title)}${l.va ? ` · CV ${esc(l.va)}` : ""}</small>
+      <div class="li-edit">
+        <label>score <input type="number" min="0" max="10" step="0.5" data-score="${esc(l.key)}" value="${l.score ?? ""}" placeholder="–"></label>
+        <label>tier <select data-litier="${esc(l.key)}"><option value="">–</option>${TIERS.map((t) => `<option ${l.tier === t ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+      </div>
+    </div>
+  </article>`;
+}
+
+function renderLIs(host) {
+  const needle = liUI.q.trim().toLowerCase();
+  let list = allLIs().filter((l) => (!liUI.category || l.g.category === liUI.category) &&
+    (!liUI.unratedOnly || l.score == null) &&
+    (!needle || [l.name, l.original, l.va, l.g.title].some((s) => (s || "").toLowerCase().includes(needle))));
+  const sorters = {
+    score: (a, b) => (b.score ?? -1) - (a.score ?? -1) || a.name.localeCompare(b.name),
+    name: (a, b) => a.name.localeCompare(b.name),
+    game: (a, b) => a.g.title.localeCompare(b.g.title),
+  };
+  list.sort(sorters[liUI.sort]);
+  host.querySelector("#liList").innerHTML = list.length ? list.map(liCardHTML).join("") : `<p class="empty">No love interests match.</p>`;
+  host.querySelector("#liCount").textContent = `${list.length} love interests`;
+  host.querySelectorAll("[data-lcat]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.lcat === liUI.category)));
+}
+
+VIEWS.lis = {
+  async render(host) {
+    host.innerHTML = `
+      <h2 class="page-h">Love Interests</h2>
+      <div class="filters page-filters">
+        <div class="filter-group"><b>Category</b>
+          <button class="chip" data-lcat="" aria-pressed="true">All</button>
+          ${Object.entries(LABELS.category).map(([k, l]) => `<button class="chip" data-lcat="${k}" aria-pressed="false">${l}</button>`).join("")}
+        </div>
+        <input id="liSearch" type="search" placeholder="Name, voice actor or game…" value="${esc(liUI.q)}">
+        <label class="inline">sort <select id="liSort"><option value="score">Score</option><option value="name">Name</option><option value="game">Game</option></select></label>
+        <label class="inline"><input type="checkbox" id="liUnrated" ${liUI.unratedOnly ? "checked" : ""}> unrated only</label>
+        <small id="liCount"></small>
+      </div>
+      <div id="liList" class="li-grid"><p class="empty">Loading…</p></div>`;
+    host.querySelector("#liSort").value = liUI.sort;
+    host.querySelector("#liSearch").oninput = (e) => { liUI.q = e.target.value; renderLIs(host); };
+    host.querySelector("#liSort").onchange = (e) => { liUI.sort = e.target.value; renderLIs(host); };
+    host.querySelector("#liUnrated").onchange = (e) => { liUI.unratedOnly = e.target.checked; renderLIs(host); };
+    host.querySelectorAll("[data-lcat]").forEach((b) => b.onclick = () => { liUI.category = b.dataset.lcat; renderLIs(host); });
+    const route = (key) => { const [gid, i] = key.split("|"); const g = state.games.find((x) => x.id === gid); return g && { g, r: g.routes[+i] }; };
+    const list = host.querySelector("#liList");
+    list.onchange = (e) => {
+      const t = e.target;
+      const key = t.dataset.score || t.dataset.litier;
+      const hit = key && route(key);
+      if (!hit) return;
+      if (t.dataset.score) hit.r.score = t.value === "" ? null : Math.min(10, Math.max(0, +t.value));
+      else hit.r.tier = t.value;
+      saveGame(hit.g).catch((err) => toast(err.message, "error"));
+    };
+    list.onclick = (e) => {
+      const b = e.target.closest("[data-opengame]");
+      if (b) { detailTab = "overview"; openDetail(b.dataset.opengame); }
+    };
+    await loadPeople();
+    if (currentView === "lis") renderLIs(host);
+  },
+};
 
 // A missing image (cover not downloaded yet) falls back to the character's initial
 document.addEventListener("error", (e) => {

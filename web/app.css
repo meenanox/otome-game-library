@@ -346,6 +346,34 @@ label.inline input { width: auto; }
 .flavours input { flex: 1; padding: 0; }
 @media (max-width: 720px) { .log-grid, .flavours { grid-template-columns: 1fr; } .diary-row { grid-template-columns: 48px 1fr; } .diary-side { grid-column: 1 / -1; flex-direction: row; } }
 
+/* Tier lists and love interests */
+.tier-board { display: flex; flex-direction: column; gap: 4px; --sz: 84px; }
+.tier-row { display: grid; grid-template-columns: 84px 1fr; min-height: calc(var(--sz) * 1.5 + 16px); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.tier-row.over { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--accent-soft); }
+.tier-label { display: grid; place-items: center; font: 700 26px "Cormorant Garamond", Georgia, serif; color: #fff; text-align: center; padding: 4px; }
+.tier-row:last-child .tier-label { font-size: 13px; font-family: inherit; font-weight: 600; }
+.tier-items { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 8px; }
+.tier-card { width: var(--sz); aspect-ratio: 2 / 3; border-radius: 6px; overflow: hidden; cursor: grab; border: 1px solid var(--border); background: var(--surface-2); }
+.tier-card:active { cursor: grabbing; }
+.tier-card:hover { border-color: var(--accent); }
+.tier-card img, .tier-card .face-txt { width: 100%; height: 100%; object-fit: cover; object-position: top; border: none; border-radius: 0; display: block; }
+.tier-card .face-txt { display: grid; place-items: center; font-size: 24px; }
+.tier-pop { position: fixed; z-index: 40; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; max-width: 260px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+.tier-pop small { color: var(--muted); }
+.tier-pop-btns { display: flex; gap: 4px; flex-wrap: wrap; }
+.tier-pop-btns button { padding: 3px 10px; border-radius: 6px; }
+.tier-pop-btns button[aria-pressed="true"] { outline: 2px solid var(--text); }
+.li-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.li-card { display: grid; grid-template-columns: 70px 1fr; gap: 10px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.li-face { padding: 0; border: none; background: transparent; border-radius: 6px; width: 70px; height: 100px; overflow: hidden; }
+.li-face img, .li-face .face-txt { width: 100%; height: 100%; object-fit: cover; object-position: top; display: grid; place-items: center; border-radius: 6px; background: var(--surface-2); }
+.li-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.li-body small { color: var(--muted); }
+.li-edit { display: flex; gap: 10px; margin-top: 4px; }
+.li-edit label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); }
+.li-edit input, .li-edit select { padding: 3px 6px; width: 72px; }
+
 /* Release choices in the import dialog */
 .rel-picker { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .rel-opt { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); cursor: pointer; }
