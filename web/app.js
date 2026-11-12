@@ -1229,6 +1229,107 @@ try {
 } catch (e) { setMenu(false); }
 showView("library");
 
+// ---------- page: Voice Actors & LIs ----------
+
+const people = { chars: null, staff: null, loading: null };
+const vaUI = { q: "", category: "", faces: true };
+
+function loadPeople() {
+  // characters.json / staff.json fill in once "Fetch characters & voice actors" has run; before that we use each game's routes
+  people.loading ||= Promise.all([api("GET", "/api/characters"), api("GET", "/api/staff")])
+    .then(([c, s]) => { people.chars = c; people.staff = s; })
+    .catch(() => { people.chars = {}; people.staff = {}; });
+  return people.loading;
+}
+
+/** The love interests of a game with their voice actor: fetched VNDB characters if we have them, else the saved routes. */
+function castOf(g) {
+  if (g.charsFetchedAt && g.charIds && g.charIds.length) {
+    const out = [];
+    for (const id of g.charIds) {
+      const c = people.chars[id];
+      const role = c && c.vns.find((x) => x.id === g.vndbId);
+      if (!c || !role || role.role !== "primary") continue;
+      const va = (c.va || []).find((x) => x.vn === g.vndbId);
+      const s = va && people.staff[va.staff];
+      out.push({ name: c.name, original: c.original, image: c.image, nsfw: c.imageNsfw,
+                 vaId: s ? s.id : "", vaName: s ? s.name : "", vaOriginal: s ? s.original : "" });
+    }
+    if (out.length) return out;
+  }
+  return (g.routes || []).filter((r) => r.seiyuu).map((r) => ({
+    name: r.name, original: r.original, image: "", vaId: "", vaName: "", vaOriginal: r.seiyuu }));
+}
+
+function vaGroups() {
+  const groups = new Map();
+  const needle = vaUI.q.trim().toLowerCase();
+  for (const g of state.games) {
+    if (vaUI.category && g.category !== vaUI.category) continue;
+    for (const c of castOf(g)) {
+      const key = c.vaOriginal || c.vaName;
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, { key, name: c.vaName, original: c.vaOriginal, roles: [] });
+      const grp = groups.get(key);
+      grp.name ||= c.vaName;
+      grp.roles.push({ ...c, game: g });
+    }
+  }
+  return [...groups.values()]
+    .filter((v) => !needle || [v.name, v.original].some((s) => (s || "").toLowerCase().includes(needle)))
+    .sort((a, b) => b.roles.length - a.roles.length || (a.original || a.name).localeCompare(b.original || b.name));
+}
+
+function roleHTML(r) {
+  const label = `${r.name}${r.original ? " · " + r.original : ""} — ${r.game.title}`;
+  const letter = esc((r.name || "?")[0]);
+  const face = vaUI.faces && (r.image || r.game.cover)
+    ? `<img src="${esc(r.image || r.game.cover)}" alt="" loading="lazy" data-letter="${letter}">` : `<span class="face-txt">${letter}</span>`;
+  return `<button type="button" class="role" data-open="${esc(r.game.id)}" title="${esc(label)}">${face}<span>${esc(r.name)}</span></button>`;
+}
+
+function renderVAs(host) {
+  const groups = vaGroups();
+  const cats = Object.entries(LABELS.category);
+  host.querySelector("#vaList").innerHTML = groups.length ? groups.map((v) => `
+    <article class="va-row">
+      <header><b>${esc(v.name || v.original)}</b>${v.name && v.original ? `<small>${esc(v.original)}</small>` : ""}
+        <small>${v.roles.length} role${v.roles.length === 1 ? "" : "s"}</small></header>
+      <div class="roles">${v.roles.map(roleHTML).join("")}</div>
+    </article>`).join("") : `<p class="empty">No voice actors yet. Add games from VNDB (with routes), or fetch characters in Settings.</p>`;
+  host.querySelector("#vaCount").textContent = `${groups.length} voice actors`;
+  host.querySelectorAll("[data-vacat]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.vacat === vaUI.category)));
+}
+
+// A missing image (cover not downloaded yet) falls back to the character's initial
+document.addEventListener("error", (e) => {
+  const img = e.target;
+  if (img.tagName === "IMG" && img.dataset.letter) img.replaceWith(Object.assign(document.createElement("span"),
+    { className: "face-txt", textContent: img.dataset.letter }));
+}, true);
+
+VIEWS.vas = {
+  async render(host) {
+    host.innerHTML = `
+      <h2 class="page-h">Voice Actors &amp; Love Interests</h2>
+      <div class="filters page-filters">
+        <div class="filter-group"><b>Category</b>
+          <button class="chip" data-vacat="" aria-pressed="true">All</button>
+          ${Object.entries(LABELS.category).map(([k, l]) => `<button class="chip" data-vacat="${k}" aria-pressed="false">${l}</button>`).join("")}
+        </div>
+        <input id="vaSearch" type="search" placeholder="Search voice actor (romaji or JP)…" value="${esc(vaUI.q)}">
+        <label class="inline"><input type="checkbox" id="vaFaces" ${vaUI.faces ? "checked" : ""}> show faces</label>
+        <small id="vaCount"></small>
+      </div>
+      <div id="vaList" class="va-list"><p class="empty">Loading…</p></div>`;
+    host.querySelector("#vaSearch").oninput = (e) => { vaUI.q = e.target.value; renderVAs(host); };
+    host.querySelector("#vaFaces").onchange = (e) => { vaUI.faces = e.target.checked; renderVAs(host); };
+    host.querySelectorAll("[data-vacat]").forEach((b) => b.onclick = () => { vaUI.category = b.dataset.vacat; renderVAs(host); });
+    await loadPeople();
+    if (currentView === "vas") renderVAs(host);
+  },
+};
+
 $("#themeBtn").onclick = () => {
   const cur = document.documentElement.dataset.theme;
   setTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
