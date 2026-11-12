@@ -22,6 +22,10 @@ const state = {
   editing: null, // game being edited, or null when adding
 };
 
+// Pages opened from the side menu. Each page registers itself here: VIEWS.name = { render(host) }.
+const VIEWS = { library: {} };
+let currentView = "library";
+
 // ---------- helpers ----------
 
 async function api(method, url, body) {
@@ -71,6 +75,7 @@ async function saveGame(g) {
   const saved = await api("PUT", `/api/games/${encodeURIComponent(g.id)}`, g);
   replaceGame(saved);
   render();
+  if (currentView !== "library") VIEWS[currentView].render($("#viewHost")); // keep the open page in step with the edit
   return saved;
 }
 
@@ -184,9 +189,9 @@ function openDetail(id) {
             `<option value="${v}" ${g.status === v ? "selected" : ""}>${l}</option>`).join("")}</select>
           <span class="stars">${stars}</span>
         </div>
-        <div class="tabs">${[["overview", "Overview"], ["study", "Study"]].map(([k, l]) =>
+        <div class="tabs">${[["overview", "Overview"], ["log", "Log"], ["study", "Study"]].map(([k, l]) =>
           `<button data-tab="${k}" aria-pressed="${detailTab === k}">${l}</button>`).join("")}</div>
-        ${detailTab === "study" ? `<div id="studyPane">${studyHTML(g)}</div>` : `
+        ${detailTab === "study" ? `<div id="studyPane">${studyHTML(g)}</div>` : detailTab === "log" ? logHTML(g) : `
         ${g.notes ? `<div class="notes">${esc(g.notes)}</div>` : ""}
         ${g.description ? `<p class="desc">${esc(g.description)}</p>` : ""}
         <section class="routes">
@@ -252,9 +257,110 @@ function openDetail(id) {
       await saveGame(g).catch((err) => toast(err.message, "error"));
     };
   }
+  bindLog(g, dlg);
   if (!dlg.open) dlg.showModal();
   if (detailTab === "study") loadStudy(g);
 }
+
+// ---------- playthrough log (dates, hours, notes, flavour) ----------
+
+const FLAVOURS = [["spice", "🌶️ Spice"], ["fluff", "💗 Fluff"], ["angst", "💧 Angst"], ["comedy", "🍿 Comedy"]];
+
+function logHTML(g) {
+  const fl = g.flavour || {};
+  return `
+    <section class="log" id="logPane">
+      <div class="log-grid">
+        <label>Started <input type="date" data-log="startedOn" value="${esc(g.startedOn || "")}"></label>
+        <label>Finished <input type="date" data-log="finishedOn" value="${esc(g.finishedOn || "")}"></label>
+        <label>Hours played <input type="number" min="0" step="0.5" data-log="playHours" value="${esc(g.playHours ?? "")}"
+          placeholder="${g.lengthMinutes ? "~" + Math.round(g.lengthMinutes / 60) + "h on VNDB" : ""}"></label>
+      </div>
+      <label>The good <textarea rows="3" data-log="good" placeholder="What worked for you">${esc(g.good || "")}</textarea></label>
+      <label>The bad <textarea rows="3" data-log="bad" placeholder="What didn't">${esc(g.bad || "")}</textarea></label>
+      <div class="flavours">${FLAVOURS.map(([k, l]) => `
+        <label>${l} <input type="range" min="0" max="5" step="1" data-flavour="${k}" value="${+fl[k] || 0}">
+          <output>${+fl[k] || 0}</output></label>`).join("")}</div>
+    </section>`;
+}
+
+function bindLog(g, dlg) {
+  const pane = $("#logPane", dlg);
+  if (!pane) return;
+  const save = async () => { await saveGame(g).catch((err) => toast(err.message, "error")); };
+  $$("[data-log]", pane).forEach((el) => el.addEventListener("change", () => {
+    const k = el.dataset.log;
+    g[k] = k === "playHours" ? (el.value === "" ? null : Math.max(0, +el.value)) : el.value;
+    save();
+  }));
+  $$("[data-flavour]", pane).forEach((el) => {
+    el.addEventListener("input", () => { el.nextElementSibling.textContent = el.value; });
+    el.addEventListener("change", () => { g.flavour = { ...(g.flavour || {}), [el.dataset.flavour]: +el.value }; save(); });
+  });
+}
+
+// ---------- page: Diary ----------
+
+const diaryUI = { q: "", status: "" };
+const inDiary = (g) => g.shelf === "diary" || ["playing", "completed", "dropped"].includes(g.status);
+const diaryDate = (g) => g.startedOn || g.finishedOn || (g.addedAt || "").slice(0, 10);
+
+function diaryEntries() {
+  const needle = diaryUI.q.trim().toLowerCase();
+  return state.games
+    .filter((g) => inDiary(g) && (!diaryUI.status || g.status === diaryUI.status) &&
+      (!needle || [g.title, g.originalTitle, g.brand].some((s) => (s || "").toLowerCase().includes(needle))))
+    .sort((a, b) => diaryDate(b).localeCompare(diaryDate(a)));
+}
+
+function diaryRowHTML(g) {
+  const dates = g.startedOn || g.finishedOn ? `${esc(g.startedOn || "?")} → ${esc(g.finishedOn || "…")}` : "no dates yet";
+  const hours = g.playHours != null && g.playHours !== "" ? `${g.playHours}h` : g.lengthMinutes ? `~${Math.round(g.lengthMinutes / 60)}h (VNDB)` : "";
+  const fl = FLAVOURS.filter(([k]) => g.flavour && g.flavour[k]).map(([k, l]) => `${l.split(" ")[0]}${g.flavour[k]}`).join(" ");
+  const note = g.good || g.bad;
+  return `
+    <article class="diary-row" tabindex="0" data-diary="${esc(g.id)}">
+      <div class="mini-cover">${coverHTML(g)}</div>
+      <div class="diary-main">
+        <h3>${esc(g.title)}</h3>
+        ${g.originalTitle ? `<p class="jp">${esc(g.originalTitle)}</p>` : ""}
+        <p class="meta">${dates}${hours ? ` · ${esc(hours)}` : ""}${(g.routes || []).length ? ` · ${cleared(g)}/${g.routes.length} routes` : ""}${fl ? ` · ${fl}` : ""}</p>
+        ${note ? `<p class="diary-note">${esc(note.length > 140 ? note.slice(0, 140) + "…" : note)}</p>` : ""}
+      </div>
+      <div class="diary-side"><span class="pill ${esc(g.status)}">${esc(LABELS.status[g.status] || "")}</span>
+        <span class="stars-ro">${g.rating ? "★".repeat(g.rating) : "—"}</span></div>
+    </article>`;
+}
+
+function renderDiary(host) {
+  const list = diaryEntries();
+  host.querySelector("#diaryList").innerHTML = list.length ? list.map(diaryRowHTML).join("")
+    : `<p class="empty">Nothing in the diary yet. Games you set to Playing, Completed or Dropped (or that come from your VNDB list as Playing / Finished) show up here.</p>`;
+  host.querySelector("#diaryCount").textContent = `${list.length} entries`;
+  host.querySelectorAll("[data-dstatus]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.dstatus === diaryUI.status)));
+}
+
+VIEWS.diary = {
+  render(host) {
+    host.innerHTML = `
+      <h2 class="page-h">Diary</h2>
+      <div class="filters page-filters">
+        <div class="filter-group"><b>Status</b>
+          <button class="chip" data-dstatus="" aria-pressed="true">All</button>
+          ${["playing", "completed", "dropped"].map((k) => `<button class="chip" data-dstatus="${k}" aria-pressed="false">${LABELS.status[k]}</button>`).join("")}
+        </div>
+        <input id="diarySearch" type="search" placeholder="Search the diary…" value="${esc(diaryUI.q)}">
+        <small id="diaryCount"></small>
+      </div>
+      <div id="diaryList" class="diary-list"></div>`;
+    host.querySelector("#diarySearch").oninput = (e) => { diaryUI.q = e.target.value; renderDiary(host); };
+    host.querySelectorAll("[data-dstatus]").forEach((b) => b.onclick = () => { diaryUI.status = b.dataset.dstatus; renderDiary(host); });
+    const open = (el) => { const row = el.closest("[data-diary]"); if (row) { detailTab = "log"; openDetail(row.dataset.diary); } };
+    host.querySelector("#diaryList").onclick = (e) => open(e.target);
+    host.querySelector("#diaryList").onkeydown = (e) => { if (e.key === "Enter") open(e.target); };
+    renderDiary(host);
+  },
+};
 
 // ---------- Jiten study ----------
 
@@ -944,7 +1050,7 @@ $("#settingsForm").addEventListener("submit", async (e) => {
 
 // ---------- itch.io import ----------
 
-const CONFIDENCE = { serial: "exact serial", link: "exact store link", title: "same title", possible: "possible match", none: "no match", error: "lookup failed" };
+const CONFIDENCE = { release: "matching release", serial: "exact serial", link: "exact store link", title: "same title", possible: "possible match", none: "no match", error: "lookup failed" };
 const itch = { source: "itch", items: [], errors: [], selected: new Set(), q: "", type: "game", showImported: false, rows: [], busy: false, run: 0 };
 const thumb = (src) => src ? `<img src="${esc(src)}" alt="" loading="lazy">` : `<span class="noimg"></span>`;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1070,6 +1176,25 @@ function categorySelect(i, value) {
   </select>`;
 }
 
+/** Releases to choose between: one card per product, with its cover, so a bundle or a volume can be told apart by sight. */
+function releasePicker(row) {
+  const rel = row.match.release;
+  if (!rel || !rel.choose) return "";
+  const kind = (g) => g.vns.length > 1
+    ? `Bundle: ${[row.match.vn.title, ...g.vns.filter((x) => x.title).map((x) => x.title)].join(" + ")}`
+    : g.rtype === "partial" ? "One volume of a split game" : "Full game";
+  return `<div class="rel-picker" role="radiogroup" aria-label="Which release is this?">
+    <small>Which release is this file?${row.releaseId ? "" : " <b>Pick one.</b>"}</small>
+    ${rel.groups.map((g) => `
+      <label class="rel-opt ${row.releaseId === g.id ? "on" : ""}">
+        <input type="radio" name="rel-${row.i}" data-rel="${row.i}" value="${esc(g.id)}" ${row.releaseId === g.id ? "checked" : ""}>
+        ${thumb(g.image)}
+        <span><b>${esc(g.name)}</b>
+          <small>${esc([g.released, g.langs.join("/"), kind(g)].filter(Boolean).join(" · "))}</small></span>
+      </label>`).join("")}
+  </div>`;
+}
+
 function matchCell(row) {
   if (!row.match) return `<span class="muted">Looking up…</span>`;
   const m = row.match;
@@ -1077,7 +1202,8 @@ function matchCell(row) {
   const v = m.vn;
   return `<label><input type="checkbox" data-use="${row.i}" ${row.use ? "checked" : ""}>
     <span><b>${esc(v.title)}</b> <span class="conf ${m.confidence}">${CONFIDENCE[m.confidence]}</span>
-      <small>${esc([v.alttitle, year(v.released), v.developers.join(", ")].filter(Boolean).join(" · "))}</small></span></label>`;
+      <small>${esc([v.alttitle, year(v.released), v.developers.join(", ")].filter(Boolean).join(" · "))}</small></span></label>
+    ${releasePicker(row)}`;
 }
 
 function renderMatchRow(row) {
@@ -1099,6 +1225,11 @@ async function startItchMatch() {
     const t = e.target;
     if (t.dataset.use) itch.rows[+t.dataset.use].use = t.checked;
     if (t.dataset.cat) itch.rows[+t.dataset.cat].category = t.value;
+    if (t.dataset.rel) {
+      const row = itch.rows[+t.dataset.rel];
+      row.releaseId = t.value;
+      $(`#match-${row.i}`).outerHTML = renderMatchRow(row);
+    }
   };
   renderItchMatchFoot();
 
@@ -1106,14 +1237,16 @@ async function startItchMatch() {
   const run = ++itch.run; // a newer run (or Back) stops this one
   for (const row of itch.rows) {
     try {
-      const q = new URLSearchParams({ title: row.item.title, url: row.item.url || "", serial: row.item.serial || "" });
+      const q = new URLSearchParams({ title: row.item.title, url: row.item.url || "", serial: row.item.serial || "",
+        platform: row.item.platform || (itch.source === "itch" ? "pc" : "") });
       row.match = await api("GET", `/api/vndb/match?${q}`);
     } catch (e) {
       row.match = { confidence: "error" };
     }
     const el = $(`#match-${row.i}`);
     if (run !== itch.run || !el || !$("#itchDialog").open) return;
-    row.use = ["serial", "link", "title"].includes(row.match.confidence);
+    row.use = ["serial", "link", "title", "release"].includes(row.match.confidence);
+    row.releaseId = row.match.release?.suggested || "";
     row.category = row.category || (row.use ? row.match.category : "") || "";
     el.outerHTML = renderMatchRow(row);
     renderItchMatchFoot();
@@ -1141,29 +1274,47 @@ async function importItchRows() {
     $(`#match-${missing[0].i} select`).focus();
     return;
   }
+  const unpicked = itch.rows.filter((r) => r.use && r.match?.release?.choose && !r.releaseId);
+  if (unpicked.length) {
+    toast(`Pick which release ${unpicked.length > 1 ? `${unpicked.length} files are` : `"${unpicked[0].item.title}" is`} first`, "error");
+    $(`#match-${unpicked[0].i}`).scrollIntoView({ block: "center" });
+    return;
+  }
   let added = 0;
   for (const row of itch.rows) {
     renderItchMatchFoot(`Importing ${added + 1}/${itch.rows.length}…`);
     const it = row.item;
-    let game = { title: it.title, brand: it.developer, cover: it.cover };
     try {
-      if (row.use && row.match?.vn) {
-        const d = await api("GET", `/api/vndb/vn/${encodeURIComponent(row.match.vn.id)}`);
-        game = {
-          title: d.title, originalTitle: d.originalTitle, released: d.released,
-          brand: d.brand || it.developer, cover: d.cover || it.cover,
-          description: d.description, routes: d.routes, vndbId: d.vndbId,
-        };
-      }
+      // A bundle release (base game + fandisc on one cartridge) becomes one entry per game, all pointing at the same file.
+      // A volume of a split game gets the release's own name and cover so volumes can be told apart.
+      const rel = row.use ? row.match?.release?.groups.find((g) => g.id === row.releaseId) : null;
+      const vids = rel && rel.vns.length > 1 ? rel.vns.map((v) => v.id) : row.use && row.match?.vn ? [row.match.vn.id] : [null];
       const where = itch.source === "scan"
         ? { platform: it.platform, format: "emulated", emulator: it.emulator, romPath: it.romPath, serial: it.serial, source: "scan" }
         : { platform: "pc", format: "pc", exePath: "", itchGameId: it.itchGameId, itchUrl: it.url, source: "itch" };
-      const saved = await api("POST", "/api/games", {
-        ...game, ...where, category: row.category, status: "unplayed", rating: 0, routes: game.routes || [],
-      });
-      replaceGame(saved);
+      for (const vid of vids) {
+        let game = { title: it.title, brand: it.developer, cover: it.cover };
+        if (vid) {
+          const d = await api("GET", `/api/vndb/vn/${encodeURIComponent(vid)}`);
+          game = {
+            title: d.title, originalTitle: d.originalTitle, released: d.released,
+            brand: d.brand || it.developer, cover: d.cover || it.cover,
+            description: d.description, routes: d.routes, vndbId: d.vndbId,
+          };
+          if (rel && rel.rtype === "partial" && vids.length === 1) {
+            game.title = rel.name;
+            game.originalTitle = rel.original || game.originalTitle;
+            game.cover = rel.fullImage || game.cover;
+          }
+          if (rel) { game.releaseId = rel.id; if (vids.length > 1) game.bundleWith = vids.filter((x) => x !== vid); }
+        }
+        const saved = await api("POST", "/api/games", {
+          ...game, ...where, category: row.category, status: "unplayed", rating: 0, routes: game.routes || [],
+        });
+        replaceGame(saved);
+        added++;
+      }
       it.imported = true;
-      added++;
     } catch (e) {
       toast(`${it.title}: ${e.message}`, "error");
     }
@@ -1182,10 +1333,6 @@ function setTheme(t) {
 }
 
 // ---------- side menu + page switching ----------
-
-// Pages opened from the menu. Each new page registers itself here: VIEWS.name = { render(host) }.
-const VIEWS = { library: {} };
-let currentView = "library";
 
 function showView(name) {
   const v = VIEWS[name];
@@ -1370,4 +1517,5 @@ $$("dialog").forEach((d) => d.addEventListener("click", (e) => { if (e.target ==
     toast("Couldn't reach the library server. Start it with start-library.bat.", "error");
   }
   render();
+  if (currentView !== "library") VIEWS[currentView].render($("#viewHost"));
 })();
