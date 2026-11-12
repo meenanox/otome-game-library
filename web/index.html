@@ -16,7 +16,42 @@
   </script>
 </head>
 <body>
+  <aside id="sidemenu" class="sidemenu" aria-label="Main menu">
+    <div class="side-head">
+      <span class="side-logo">✦ My Library</span>
+      <button type="button" class="icon" id="menuClose" aria-label="Close menu">✕</button>
+    </div>
+    <nav class="side-nav">
+      <p class="side-h">Home</p>
+      <button type="button" class="nav-item" data-view="library"><i>01</i> Library</button>
+
+      <p class="side-h">People <em>soon</em></p>
+      <button type="button" class="nav-item" disabled><i>02</i> Voice Actors &amp; LIs</button>
+      <button type="button" class="nav-item" disabled><i>03</i> Love Interests</button>
+
+      <p class="side-h">Tiers <em>soon</em></p>
+      <button type="button" class="nav-item" disabled><i>04</i> LI Tier List</button>
+      <button type="button" class="nav-item" disabled><i>05</i> Game Tier List</button>
+
+      <p class="side-h">Diary <em>soon</em></p>
+      <button type="button" class="nav-item" disabled><i>06</i> Diary</button>
+      <button type="button" class="nav-item" disabled><i>07</i> Timeline</button>
+      <button type="button" class="nav-item" disabled><i>08</i> Hall of Shame &amp; Fame</button>
+
+      <p class="side-h">Tools</p>
+      <button id="studyBtn" type="button" class="nav-item" title="Japanese difficulty and reading progress"><i>学</i> Japanese study</button>
+      <button id="itchBtn" type="button" class="nav-item" title="Import your itch.io library"><i>⇩</i> Import from itch.io</button>
+      <button id="scanBtn" type="button" class="nav-item" title="Find emulated games in your folders"><i>⌕</i> Scan folders</button>
+
+      <p class="side-h">System</p>
+      <button id="settingsBtn" type="button" class="nav-item" title="Emulators, VNDB and API keys"><i>⚙</i> Settings</button>
+      <button id="themeBtn" type="button" class="nav-item" title="Switch theme"><i>◐</i> Theme</button>
+    </nav>
+  </aside>
+  <div id="menuScrim" class="menu-scrim" hidden></div>
+
   <header class="topbar">
+    <button type="button" id="menuBtn" class="ghost menu-btn" aria-label="Open menu" aria-expanded="false" aria-controls="sidemenu">☰</button>
     <h1 class="brand">My Library <small>otome · BL · josei-muke</small></h1>
     <input id="search" type="search" placeholder="Search titles, brands, characters, seiyuu…" autocomplete="off">
     <select id="sort" aria-label="Sort by">
@@ -27,22 +62,20 @@
       <option value="rating">Rating</option>
     </select>
     <div class="top-actions">
-      <button id="themeBtn" class="ghost" title="Switch theme">◐ <span>Theme</span></button>
-      <button id="settingsBtn" class="ghost" title="Emulators and itch.io key">⚙ <span>Settings</span></button>
-      <button id="studyBtn" class="ghost" title="Japanese difficulty and reading progress">学 <span>Study</span></button>
-      <button id="itchBtn" class="ghost" title="Import your itch.io library">⇩ <span>itch.io</span></button>
-      <button id="scanBtn" class="ghost" title="Find emulated games in your folders">⌕ <span>Scan folders</span></button>
       <button id="addBtn" class="primary">＋ Add game</button>
     </div>
   </header>
 
-  <nav class="filters" id="filters"></nav>
+  <nav class="filters" id="filters" data-view-of="library"></nav>
 
-  <main>
+  <main data-view-of="library">
     <p id="summary" class="summary"></p>
     <section id="grid" class="grid"></section>
     <p id="empty" class="empty" hidden>No games match these filters.</p>
   </main>
+
+  <!-- Host for the pages opened from the side menu (filled as they are built) -->
+  <main id="viewHost" hidden></main>
 
   <!-- Game details -->
   <dialog id="detailDialog" class="sheet wide"></dialog>

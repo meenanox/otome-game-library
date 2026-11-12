@@ -1181,6 +1181,54 @@ function setTheme(t) {
   try { localStorage.setItem("theme", t); } catch (e) {}
 }
 
+// ---------- side menu + page switching ----------
+
+// Pages opened from the menu. Each new page registers itself here: VIEWS.name = { render(host) }.
+const VIEWS = { library: {} };
+let currentView = "library";
+
+function showView(name) {
+  const v = VIEWS[name];
+  if (!v) return;
+  currentView = name;
+  const library = name === "library";
+  $$("[data-view-of='library']").forEach((el) => { el.hidden = !library; });
+  $("#viewHost").hidden = library;
+  $("#search").hidden = $("#sort").hidden = !library;
+  if (!library) { $("#viewHost").innerHTML = ""; v.render($("#viewHost")); }
+  $$(".nav-item[data-view]").forEach((b) => {
+    if (b.dataset.view === name) b.setAttribute("aria-current", "page");
+    else b.removeAttribute("aria-current");
+  });
+  if (narrowScreen()) setMenu(false);
+}
+
+const narrowScreen = () => matchMedia("(max-width: 999px)").matches;
+
+function setMenu(open) {
+  document.body.classList.toggle("menu-open", open);
+  $("#menuBtn").setAttribute("aria-expanded", String(open));
+  $("#menuScrim").hidden = !(open && narrowScreen());
+  try { localStorage.setItem("menuOpen", open ? "1" : "0"); } catch (e) {}
+}
+
+$("#menuBtn").onclick = () => setMenu(!document.body.classList.contains("menu-open"));
+$("#menuClose").onclick = () => setMenu(false);
+$("#menuScrim").onclick = () => setMenu(false);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && narrowScreen() && document.body.classList.contains("menu-open")
+      && !document.querySelector("dialog[open]")) setMenu(false);
+});
+$$(".nav-item[data-view]").forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
+// Tool buttons (study, itch.io, scan, settings, theme) open dialogs: on a phone the menu should get out of the way
+$$(".nav-item:not([data-view])").forEach((b) => b.addEventListener("click", () => { if (narrowScreen()) setMenu(false); }));
+matchMedia("(max-width: 999px)").addEventListener("change", () => setMenu(document.body.classList.contains("menu-open")));
+try {
+  // Wide screens start with the menu pinned open unless it was closed last time; phones start closed
+  setMenu(!narrowScreen() && localStorage.getItem("menuOpen") !== "0");
+} catch (e) { setMenu(false); }
+showView("library");
+
 $("#themeBtn").onclick = () => {
   const cur = document.documentElement.dataset.theme;
   setTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
