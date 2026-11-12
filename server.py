@@ -273,35 +273,122 @@ def normalise(title):
     return re.sub(r"[\W_]+", "", (title or "").casefold())
 
 
-def vndb_match(title, itch_url="", serial=""):
-    """Best VNDB entry: exact store link or console serial, then exact title, then a guess."""
+APP_PLATFORM_TO_VNDB = {"pc": "win", "psp": "psp", "vita": "psv", "switch": "swi", "ps4": "ps4"}
+EDITION_TAIL = re.compile(
+    r"(?:\s+[-–—:]\s+|\s+)[(\[]?\s*(?:(?:regular|standard|normal|limited|special|premium|deluxe|collector'?s?|first[- ]print|"
+    r"download|digital|dl)\s+)+(?:edition|version|ver\.?|pack|box|set)\s*[)\]]?\s*$", re.I)
+REL_FIELDS = ("id, title, alttitle, released, languages.lang, catalog, vns.id, vns.rtype, "
+              "images.type, images.url, images.thumbnail")
+
+
+def edition_stem(title):
+    return EDITION_TAIL.sub("", title or "").strip()
+
+
+def vndb_releases(vid, platform, item_title="", serial="", hints=()):
+    """Releases of a VN on one platform, folded into one card per product (editions of the same thing
+    collapse). Asks the user to choose only when it matters: a release that bundles several VNs
+    (base game + fandisc) or that is just one volume (rtype "partial") of a VN split in parts."""
+    flt = ["vn", "=", ["id", "=", vid]]
+    if platform in APP_PLATFORM_TO_VNDB:
+        flt = ["and", flt, ["platform", "=", APP_PLATFORM_TO_VNDB[platform]]]
+    rels = vndb("release", {"filters": ["and", flt, ["official", "=", 1]], "fields": REL_FIELDS,
+                            "results": 100, "sort": "released"}).get("results", [])
+    other = sorted({v["id"] for r in rels for v in r.get("vns") or []} - {vid})
+    names = {}
+    if other:
+        for v in vndb("vn", {"filters": ["or"] + [["id", "=", i] for i in other],
+                             "fields": "id, title, image.url", "results": 100}).get("results", []):
+            names[v["id"]] = v
+    groups = {}
+    for r in rels:
+        vns = r.get("vns") or []
+        langs = tuple(sorted(l["lang"] for l in r.get("languages") or []))
+        key = (tuple(sorted(v["id"] for v in vns)), normalise(edition_stem(r["title"])), langs)
+        img = next((i for i in r.get("images") or [] if i["type"] in ("pkgfront", "dig")), None) \
+            or next(iter(r.get("images") or []), None)
+        grp = groups.setdefault(key, {
+            "id": r["id"], "ids": [], "title": r["title"], "name": edition_stem(r["title"]) or r["title"],
+            "original": edition_stem(r.get("alttitle") or ""), "released": r.get("released") or "", "langs": list(langs),
+            "image": (img or {}).get("thumbnail") or (img or {}).get("url") or "",
+            "fullImage": (img or {}).get("url") or "", "catalog": r.get("catalog") or "",
+            "rtype": next((v["rtype"] for v in vns if v["id"] == vid), "complete"),
+            "vns": [{"id": v["id"], "rtype": v["rtype"],
+                     "title": (names.get(v["id"]) or {}).get("title") or r["title"] if v["id"] != vid else ""} for v in vns],
+        })
+        grp["ids"].append(r["id"])
+        if not grp["image"] and img:
+            grp["image"] = img.get("thumbnail") or img["url"]
+    out = list(groups.values())
+    choose = any(len(g["vns"]) > 1 or g["rtype"] == "partial" for g in out)
+
+    suggested = ""
+    if out:
+        want, want_serial = normalise(item_title), normalise(serial)
+        def score(g):
+            if set(g["ids"]) & set(hints) or (want_serial and want_serial in {normalise(c) for c in [g["catalog"]]}):
+                return 1000
+            names_ = [normalise(g["name"]), normalise(g["original"])]
+            return max((len(n) for n in names_ if n and want and (n in want or want in n)), default=0)
+        ranked = sorted(out, key=score, reverse=True)
+        if score(ranked[0]) and (len(ranked) == 1 or score(ranked[0]) > score(ranked[1])):
+            suggested = ranked[0]["id"]
+        elif len(out) == 1:
+            suggested = out[0]["id"]
+        elif not score(ranked[0]):
+            ja = [g for g in out if "ja" in g["langs"]]  # nothing in the name to go on: the lone Japanese release
+            if len(ja) == 1:
+                suggested = ja[0]["id"]
+    return {"choose": choose, "groups": out, "suggested": suggested}
+
+
+def vndb_match(title, itch_url="", serial="", platform=""):
+    """vndb_match_vn() plus the matching VN's releases on this platform, when there's something to choose."""
+    res, hints = vndb_match_vn(title, itch_url, serial)
+    if res.get("vn") and platform:
+        try:
+            rel = vndb_releases(res["vn"]["id"], platform, title, serial, hints)
+            if rel["choose"]:
+                res["release"] = rel
+                if rel["suggested"] and res["confidence"] == "possible":
+                    res["confidence"] = "release"  # the file's name matches a specific release, which is stronger than a loose title guess
+        except (urllib.error.URLError, ValueError, KeyError) as e:
+            print(f"Release lookup failed for {title}: {e}", file=sys.stderr)
+    return res
+
+
+def vndb_match_vn(title, itch_url="", serial=""):
+    """Best VNDB entry: exact store link or console serial, then exact title, then a guess.
+    Returns (result, ids of the releases that matched exactly)."""
     fields = SUMMARY_FIELDS + ", titles.title, tags.name, tags.rating"
     if serial:
         want = normalise(serial)
         releases = vndb("release", {"filters": ["search", "=", serial], "fields": "catalog, vns.id", "results": 10})
-        vids = [vn["id"] for r in releases.get("results", []) if normalise(r.get("catalog")) == want
-                for vn in r.get("vns") or []]
+        exact = [r for r in releases.get("results", []) if normalise(r.get("catalog")) == want]
+        vids = [vn["id"] for r in exact for vn in r.get("vns") or []]
         if vids:
             hit = vndb("vn", {"filters": ["id", "=", vids[0]], "fields": fields}).get("results")
             if hit:
-                return {"confidence": "serial", "vn": vn_summary(hit[0]), "category": guess_category(hit[0])}
+                return ({"confidence": "serial", "vn": vn_summary(hit[0]), "category": guess_category(hit[0])},
+                        [r["id"] for r in exact])
     if itch_url:
-        releases = vndb("release", {"filters": ["extlink", "=", itch_url], "fields": "vns.id", "results": 5})
+        releases = vndb("release", {"filters": ["extlink", "=", itch_url], "fields": "id, vns.id", "results": 5})
         vids = [vn["id"] for r in releases.get("results", []) for vn in r.get("vns") or []]
         if vids:
             hit = vndb("vn", {"filters": ["id", "=", vids[0]], "fields": fields}).get("results")
             if hit:
-                return {"confidence": "link", "vn": vn_summary(hit[0]), "category": guess_category(hit[0])}
+                return ({"confidence": "link", "vn": vn_summary(hit[0]), "category": guess_category(hit[0])},
+                        [r["id"] for r in releases.get("results", [])])
     hits = vndb("vn", {"filters": ["search", "=", title], "fields": fields,
                        "sort": "searchrank", "results": 5}).get("results", [])
     want = normalise(title)
     for h in hits:
         names = [h.get("title"), h.get("alttitle")] + [t["title"] for t in h.get("titles") or []]
         if want and want in {normalise(n) for n in names if n}:
-            return {"confidence": "title", "vn": vn_summary(h), "category": guess_category(h)}
+            return {"confidence": "title", "vn": vn_summary(h), "category": guess_category(h)}, []
     if hits:
-        return {"confidence": "possible", "vn": vn_summary(hits[0]), "category": guess_category(hits[0])}
-    return {"confidence": "none"}
+        return {"confidence": "possible", "vn": vn_summary(hits[0]), "category": guess_category(hits[0])}, []
+    return {"confidence": "none"}, []
 
 
 # ---------- folder scan (emulated games) ----------
@@ -956,7 +1043,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(vndb_details(m.group(1)))
             if path == "/api/vndb/match":
                 arg = lambda k: query.get(k, [""])[0].strip()
-                return self.send_json(vndb_match(arg("title"), arg("url"), arg("serial")))
+                return self.send_json(vndb_match(arg("title"), arg("url"), arg("serial"), arg("platform")))
             if path == "/api/jiten/match":
                 arg = lambda k: query.get(k, [""])[0].strip()
                 return self.send_json(jiten_match(arg("vndb"), [arg("title"), arg("alt")]))
