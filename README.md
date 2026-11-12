@@ -22,6 +22,11 @@ pick categories, import. The key stays in `data/settings.json` and is never sent
 (`ux0\app\<TITLE_ID>`). PSP ISOs, EBOOTs and Vita apps carry their real title and serial, and VNDB
 matches serials exactly. Vita games launch by title ID (`-r {rom}`).
 
+**Check my library:** looks up every file in your game folders that isn't in the library yet on VNDB.
+When a file matches a game already on your VNDB list (imported with the list sync), ticking it links the file
+to that entry instead of creating a duplicate. Bundles link every game they contain. Rows that aren't on your
+list or didn't match are only reported; use **Scan folders** to import those.
+
 **Japanese study (Jiten):** each game has a **Study** tab, and the **Study** button in the top bar opens a library-wide
 view. Games match on [jiten.moe](https://jiten.moe) by VNDB id (exact), then exact title; anything fuzzy is offered as
 a pick-list, never linked silently. The card shows a difficulty pill beside the title. Stats are stored in `games.json`

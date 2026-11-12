@@ -1402,6 +1402,130 @@ async function importItchRows() {
   toast(`Imported ${added} game${added === 1 ? "" : "s"}${itch.source === "itch" ? " from itch.io" : ""}`);
 }
 
+// ---------- check my library: game folders vs. games imported from VNDB ----------
+
+const check = { rows: [], busy: false, run: 0 };
+
+const CHECK_NOTE = {
+  link: "Link to your list entry",
+  have: "Your list entry already has a file",
+  dupe: "Another file already matched this entry",
+  off: "Not on your VNDB list",
+  weak: "Unsure match",
+  none: "No VNDB match",
+  error: "Lookup failed",
+};
+
+async function openCheck() {
+  const hasFolders = Object.values(state.settings.emulators).some((e) => (e.folders || []).length);
+  startImport("check", "Check my library", hasFolders ? "Scanning folders…" : "");
+  if (!hasFolders) {
+    $("#itchBody").innerHTML = `<p>Add your game folders for each emulator in <b>Settings</b> first.</p>`;
+    $("#itchFoot").innerHTML = `<button class="primary" id="scanToSettings">Open Settings</button>`;
+    $("#scanToSettings").onclick = () => { $("#itchDialog").close(); openSettings(); };
+    return;
+  }
+  const run = check.run = itch.run;
+  try {
+    const res = await api("GET", "/api/scan");
+    const files = res.items.filter((it) => !it.imported);
+    const entries = (vid) => state.games.filter((g) => g.vndbId === vid);
+    check.rows = files.map((item, i) => ({ i, item, match: null, kind: "", game: null, use: false }));
+    $("#itchBody").innerHTML = `
+      <p class="muted">Looks up each file in your folders on VNDB. A file that matches a game already on your VNDB list is linked to that entry, so it launches from the library without making a duplicate.</p>
+      ${res.errors.map((e) => `<p class="muted">⚠ ${esc(e)}</p>`).join("")}
+      <div id="checkSum" class="muted"></div>
+      <div class="itch-list" id="checkList">${check.rows.map(checkRowHTML).join("") || `<p class="muted">Every file in your folders is already in the library.</p>`}</div>`;
+    $("#checkList").onchange = (e) => {
+      if (e.target.dataset.check) check.rows[+e.target.dataset.check].use = e.target.checked;
+      checkFoot();
+    };
+    check.busy = true;
+    checkFoot();
+    const claimed = new Set();
+    for (const row of check.rows) {
+      try {
+        const it = row.item;
+        row.match = await api("GET", `/api/vndb/match?${new URLSearchParams({ title: it.title, url: "", serial: it.serial || "", platform: it.platform })}`);
+      } catch (e) {
+        row.match = { confidence: "error" };
+      }
+      if (run !== itch.run || !$("#itchDialog").open) return;
+      const m = row.match, vid = m.vn?.id;
+      // A bundle (base game + fandisc on one cartridge) covers every VN in the chosen release
+      const rel = m.release?.groups.find((g) => g.id === m.release.suggested);
+      const vids = rel && rel.vns.length > 1 ? rel.vns.map((v) => v.id) : vid ? [vid] : [];
+      const sure = ["serial", "link", "title", "release"].includes(m.confidence);
+      const listed = vids.flatMap(entries);
+      if (!vid) row.kind = m.confidence === "error" ? "error" : "none";
+      else if (!listed.length) row.kind = "off";
+      else if (listed.every((g) => g.romPath)) row.kind = "have";
+      else if (vids.some((v) => claimed.has(v))) row.kind = "dupe";
+      else row.kind = sure ? "link" : "weak";
+      row.games = listed.filter((g) => !g.romPath);
+      if (row.kind === "link" || row.kind === "weak") vids.forEach((v) => claimed.add(v));
+      row.use = row.kind === "link";
+      $(`#chk-${row.i}`).outerHTML = checkRowHTML(row);
+      checkFoot();
+      await wait(250); // stay well inside VNDB's rate limit
+    }
+    check.busy = false;
+    checkFoot();
+  } catch (e) {
+    $("#itchBody").innerHTML = `<p>${esc(e.message)}</p>`;
+  }
+}
+
+function checkRowHTML(row) {
+  const m = row.match, linkable = row.kind === "link" || row.kind === "weak";
+  const result = !m ? `<span class="muted">Looking up…</span>`
+    : `<span class="conf ${esc(m.confidence)}">${esc(CHECK_NOTE[row.kind])}</span>
+       ${m.vn ? `<small>${esc([m.vn.title, year(m.vn.released)].filter(Boolean).join(" · "))}</small>` : ""}
+       ${linkable ? `<small>→ ${esc(row.games.map((g) => g.title).join(" + "))}</small>` : ""}`;
+  return `<label class="itch-row check-row ${row.kind === "have" || row.kind === "dupe" ? "done" : ""}" id="chk-${row.i}" title="${esc(row.item.location)}">
+    <input type="checkbox" data-check="${row.i}" ${row.use ? "checked" : ""} ${linkable ? "" : "disabled"}>
+    <span class="noimg"></span>
+    <span><b>${esc(row.item.title)}</b><small>${esc([LABELS.platform[row.item.platform] || row.item.platform, row.item.serial].filter(Boolean).join(" · "))}</small></span>
+    <span class="check-result">${result}</span>
+  </label>`;
+}
+
+function checkFoot(progress) {
+  const done = check.rows.filter((r) => r.match).length, n = check.rows.filter((r) => r.use).length;
+  const count = (k) => check.rows.filter((r) => r.kind === k).length;
+  $("#checkSum") && ($("#checkSum").textContent = check.rows.length
+    ? `${count("link") + count("weak")} match your VNDB list · ${count("have") + count("dupe")} already linked · ${count("off")} not on your list · ${count("none") + count("error")} unmatched`
+    : "");
+  $("#itchFoot").innerHTML = `
+    <span class="foot-note">${esc(progress || (check.busy ? `Checking ${done}/${check.rows.length}…` : `${check.rows.length} file${check.rows.length === 1 ? "" : "s"} checked`))}</span>
+    <button type="button" class="ghost" data-close>Close</button>
+    <button type="button" class="primary" id="checkApply" ${n && !progress ? "" : "disabled"}>Link ${n}</button>`;
+  $("#checkApply").onclick = applyCheck;
+}
+
+async function applyCheck() {
+  const todo = check.rows.filter((r) => r.use);
+  let linked = 0;
+  for (const row of todo) {
+    checkFoot(`Linking ${linked + 1}/${todo.length}…`);
+    const it = row.item;
+    for (const g of row.games) {
+      try {
+        const cur = state.games.find((x) => x.id === g.id);
+        await saveGame({ ...cur, format: "emulated", platform: it.platform, emulator: it.emulator, romPath: it.romPath, serial: it.serial });
+        linked++;
+      } catch (e) {
+        toast(`${g.title}: ${e.message}`, "error");
+      }
+    }
+    row.use = false;
+    row.kind = "have";
+    $(`#chk-${row.i}`).outerHTML = checkRowHTML(row);
+  }
+  checkFoot();
+  toast(`Linked ${linked} game${linked === 1 ? "" : "s"} to your folders`);
+}
+
 // ---------- global wiring ----------
 
 function setTheme(t) {
@@ -1768,6 +1892,7 @@ $("#addBtn").onclick = () => openEdit(null);
 $("#settingsBtn").onclick = openSettings;
 $("#itchBtn").onclick = openItch;
 $("#scanBtn").onclick = openScan;
+$("#checkBtn").onclick = openCheck;
 $("#search").addEventListener("input", (e) => { state.filter.q = e.target.value; render(); });
 $("#sort").onchange = (e) => { state.sort = e.target.value; render(); };
 

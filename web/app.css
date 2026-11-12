@@ -466,3 +466,10 @@ table.learn td { padding: 4px 10px; border-bottom: 1px solid var(--border); vert
 table.learn td.lw { font-size: 16px; white-space: nowrap; }
 table.learn td.num { text-align: right; white-space: nowrap; color: var(--muted); }
 table.learn td:nth-child(2) { white-space: nowrap; }
+
+.check-row { grid-template-columns: auto 1fr 1.4fr; }
+.check-row .noimg { display: none; }
+.check-result small { display: block; }
+.conf.have, .conf.dupe, .conf.off { background: var(--st-none); }
+.conf.weak { background: var(--st-progress); color: #fff; }
+.conf.link { background: var(--st-good); color: #fff; }
