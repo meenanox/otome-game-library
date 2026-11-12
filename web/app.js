@@ -807,6 +807,9 @@ function openEdit(g) {
   form.reset();
   form.dataset.vndbId = g?.vndbId || "";
   form.dataset.coverNsfw = "";
+  form.dataset.releaseId = g?.releaseId || "";
+  form.dataset.bundleWith = "";
+  pendingRelease = null;
   $("#vndbResults").innerHTML = "";
   $("#vndbQuery").value = "";
   fillForm(g || {});
@@ -854,12 +857,61 @@ async function applyVndb(vid) {
     });
     form.dataset.vndbId = d.vndbId;
     form.dataset.coverNsfw = d.coverNsfw ? "1" : "";
+    form.dataset.releaseId = "";
+    form.dataset.bundleWith = "";
     box.innerHTML = "";
     toast(`Filled from VNDB · ${d.routes.length} characters found`);
+    lastVn = d;
+    await offerReleases(d);
   } catch (e) {
     box.innerHTML = `<p class="muted">${esc(e.message)}</p>`;
   }
 }
+
+// ---- which release? (bundles and split volumes) ----
+let pendingRelease = null; // { d, rel } while the picker is showing
+let lastVn = null;         // the VN last picked in the form, so changing Platform can re-check its releases
+
+async function offerReleases(d) {
+  const box = $("#vndbResults");
+  const platform = form.elements.platform.value;
+  pendingRelease = null;
+  try {
+    const rel = await api("GET", `/api/vndb/releases?${new URLSearchParams({ vn: d.vndbId, platform, title: form.elements.title.value })}`);
+    if (!rel.choose) return;
+    pendingRelease = { d, rel };
+    if (rel.suggested) pickRelease(rel.suggested); else showReleasePicker("");
+  } catch (e) { /* the form is already filled; a failed release lookup shouldn't get in the way */ }
+}
+
+function showReleasePicker(selected) {
+  const { d, rel } = pendingRelease;
+  const g = rel.groups.find((x) => x.id === selected);
+  const others = g && g.vns.length > 1 ? g.vns.filter((v) => v.id !== d.vndbId && v.title).map((v) => v.title) : [];
+  $("#vndbResults").innerHTML = relCardsHTML(rel, d.title, selected, "addrel", "data-addrel",
+    `Which ${LABELS.platform[form.elements.platform.value] || ""} release do you have?`) +
+    (others.length ? `<p class="muted">Saving also adds: <b>${esc(others.join(", "))}</b> (same game file).</p>` : "");
+}
+
+function pickRelease(id) {
+  const { d, rel } = pendingRelease;
+  const g = rel.groups.find((x) => x.id === id);
+  if (!g) return;
+  form.dataset.releaseId = g.id;
+  form.dataset.bundleWith = g.vns.length > 1 ? JSON.stringify(g.vns.map((v) => v.id).filter((v) => v !== d.vndbId)) : "";
+  const volume = g.rtype === "partial" && g.vns.length === 1;
+  form.elements.title.value = volume ? g.name : d.title;
+  form.elements.originalTitle.value = (volume && g.original) || d.originalTitle || "";
+  form.elements.cover.value = (volume && g.fullImage) || d.cover || "";
+  showReleasePicker(id);
+}
+
+$("#vndbResults").addEventListener("change", (e) => {
+  if (e.target.dataset.addrel && pendingRelease) pickRelease(e.target.value);
+});
+form.elements.platform.addEventListener("change", () => {
+  if (lastVn && form.dataset.vndbId === lastVn.vndbId) offerReleases(lastVn);
+});
 
 function readCurrentForm() {
   const f = form.elements;
@@ -874,6 +926,7 @@ function readCurrentForm() {
   g.romPath = g.format === "emulated" ? f.romPath.value.trim() : "";
   g.routes = readRoutesEdit();
   g.vndbId = form.dataset.vndbId || g.vndbId || "";
+  if (form.dataset.releaseId) g.releaseId = form.dataset.releaseId;
   if (form.dataset.coverNsfw) g.coverNsfw = true;
   g.rating = g.rating || 0;
   delete g.sample;
@@ -886,13 +939,29 @@ form.addEventListener("submit", async (e) => {
   if (!g.title) return toast("A title is needed", "error");
   $("#saveBtn").disabled = true;
   try {
+    const bundle = form.dataset.bundleWith ? JSON.parse(form.dataset.bundleWith) : [];
+    if (bundle.length) g.bundleWith = bundle;
     const saved = state.editing
       ? await api("PUT", `/api/games/${encodeURIComponent(g.id)}`, g)
       : await api("POST", "/api/games", g);
     replaceGame(saved);
+    // A bundle release (base game + fandisc on one disc/cartridge): add the other games too, sharing the file
+    const extra = [];
+    for (const vid of bundle) {
+      if (state.games.some((x) => x.vndbId === vid && x.releaseId === g.releaseId)) continue;
+      const d = await api("GET", `/api/vndb/vn/${encodeURIComponent(vid)}`);
+      const { id, addedAt, routes, rating, lastPlayed, jiten, ...shared } = saved;
+      const more = await api("POST", "/api/games", {
+        ...shared, title: d.title, originalTitle: d.originalTitle, released: d.released, brand: d.brand || saved.brand,
+        cover: d.cover, description: d.description, routes: d.routes, vndbId: d.vndbId, rating: 0,
+        bundleWith: [saved.vndbId, ...bundle.filter((x) => x !== vid)],
+      });
+      replaceGame(more);
+      extra.push(more.title);
+    }
     render();
     $("#editDialog").close();
-    toast(state.editing ? "Saved" : `Added ${saved.title}`);
+    toast(state.editing ? "Saved" : `Added ${saved.title}${extra.length ? ` + ${extra.join(", ")}` : ""}`);
     openDetail(saved.id);
   } catch (err) {
     toast(err.message, "error");
@@ -1177,22 +1246,26 @@ function categorySelect(i, value) {
 }
 
 /** Releases to choose between: one card per product, with its cover, so a bundle or a volume can be told apart by sight. */
-function releasePicker(row) {
-  const rel = row.match.release;
-  if (!rel || !rel.choose) return "";
+function relCardsHTML(rel, vnTitle, selected, radioName, dataAttr, heading) {
   const kind = (g) => g.vns.length > 1
-    ? `Bundle: ${[row.match.vn.title, ...g.vns.filter((x) => x.title).map((x) => x.title)].join(" + ")}`
+    ? `Bundle: ${[vnTitle, ...g.vns.filter((x) => x.title).map((x) => x.title)].join(" + ")}`
     : g.rtype === "partial" ? "One volume of a split game" : "Full game";
-  return `<div class="rel-picker" role="radiogroup" aria-label="Which release is this?">
-    <small>Which release is this file?${row.releaseId ? "" : " <b>Pick one.</b>"}</small>
+  return `<div class="rel-picker" role="radiogroup" aria-label="${esc(heading)}">
+    <small>${esc(heading)}${selected ? "" : " <b>Pick one.</b>"}</small>
     ${rel.groups.map((g) => `
-      <label class="rel-opt ${row.releaseId === g.id ? "on" : ""}">
-        <input type="radio" name="rel-${row.i}" data-rel="${row.i}" value="${esc(g.id)}" ${row.releaseId === g.id ? "checked" : ""}>
+      <label class="rel-opt ${selected === g.id ? "on" : ""}">
+        <input type="radio" name="${radioName}" ${dataAttr}="${esc(g.id)}" value="${esc(g.id)}" ${selected === g.id ? "checked" : ""}>
         ${thumb(g.image)}
         <span><b>${esc(g.name)}</b>
           <small>${esc([g.released, g.langs.join("/"), kind(g)].filter(Boolean).join(" · "))}</small></span>
       </label>`).join("")}
   </div>`;
+}
+
+function releasePicker(row) {
+  const rel = row.match.release;
+  if (!rel || !rel.choose) return "";
+  return relCardsHTML(rel, row.match.vn.title, row.releaseId, `rel-${row.i}`, `data-rel="${row.i}" data-relid`, "Which release is this file?");
 }
 
 function matchCell(row) {

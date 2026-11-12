@@ -1041,6 +1041,11 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/vndb/vn/(v\d+)", path)
             if m:
                 return self.send_json(vndb_details(m.group(1)))
+            if path == "/api/vndb/releases":
+                arg = lambda k: query.get(k, [""])[0].strip()
+                if not re.fullmatch(r"v\d+", arg("vn")):
+                    raise ValueError("Bad VNDB id")
+                return self.send_json(vndb_releases(arg("vn"), arg("platform"), arg("title")))
             if path == "/api/vndb/match":
                 arg = lambda k: query.get(k, [""])[0].strip()
                 return self.send_json(vndb_match(arg("title"), arg("url"), arg("serial"), arg("platform")))
