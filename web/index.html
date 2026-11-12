@@ -166,6 +166,20 @@
         <label>Anki export: tags <input id="ankiTags" placeholder="yomitan"></label>
         <small>Used by "Download for Anki" in a game's Study tab. Defaults match your Yomitan Lapis setup. The game's name is added as a tag too.</small>
       </div>
+      <h3 class="settings-h">VNDB list &amp; characters</h3>
+      <div class="emu-row">
+        <input id="vndbToken" type="password" autocomplete="off" placeholder="Paste your VNDB API token">
+        <small id="vndbTokenState"></small>
+        <small>Create one at <a href="https://vndb.org/u/tokens" target="_blank" rel="noopener">vndb.org/u/tokens ↗</a> with
+          <b>listread</b> ticked. It's kept only in <code>data/settings.json</code> on this PC. Save settings after pasting it.</small>
+        <label class="inline" id="vndbTokenClearWrap"><input type="checkbox" id="vndbTokenClear"> Remove the saved token</label>
+        <div class="row">
+          <button type="button" id="vndbSyncBtn">Sync my VNDB list</button>
+          <button type="button" id="charsStartBtn" class="ghost">Fetch characters &amp; voice actors</button>
+          <button type="button" id="charsStopBtn" class="ghost" hidden>Stop</button>
+        </div>
+        <small id="vndbSummary"></small>
+      </div>
       <h3 class="settings-h">itch.io</h3>
       <div class="emu-row">
         <input id="itchKey" type="password" autocomplete="off" placeholder="Paste your API key">

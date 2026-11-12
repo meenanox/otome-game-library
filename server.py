@@ -26,6 +26,8 @@ DATA = ROOT / "data"
 COVERS = DATA / "covers"
 GAMES_FILE = DATA / "games.json"
 SETTINGS_FILE = DATA / "settings.json"
+CHARACTERS_FILE = DATA / "characters.json"  # VNDB character id -> record (fetched data only)
+STAFF_FILE = DATA / "staff.json"            # VNDB staff id -> voice actor record
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", 8642))  # 8765 is taken by AnkiConnect
@@ -89,6 +91,7 @@ def public_settings():
     settings["ankiExport"] = {**DEFAULT_ANKI, **(settings.get("ankiExport") or {})}
     settings["jitenKeySet"] = bool(settings.pop("jitenApiKey", ""))
     settings["itchKeySet"] = bool(settings.pop("itchApiKey", ""))
+    settings["vndbTokenSet"] = bool(settings.pop("vndbToken", ""))
     return settings
 
 
@@ -127,6 +130,18 @@ def save_settings(incoming):
             current["readingSpeed"] = speed
         else:
             current.pop("readingSpeed", None)
+    vtoken = (incoming.get("vndbToken") or "").strip()
+    if vtoken:
+        info = vndb_get("authinfo", vtoken)
+        if "listread" not in (info.get("permissions") or []):
+            raise ValueError("That VNDB token doesn't have the listread permission. "
+                             "Create a new one at vndb.org/u/tokens with listread ticked.")
+        current["vndbToken"] = vtoken
+        current["vndbUser"] = info["id"]
+        current["vndbUsername"] = info.get("username", "")
+    elif incoming.get("clearVndbToken"):
+        for k in ("vndbToken", "vndbUser", "vndbUsername"):
+            current.pop(k, None)
     key = (incoming.get("itchApiKey") or "").strip()
     if key:
         current["itchApiKey"] = key
@@ -202,15 +217,26 @@ def launch(game, settings):
 
 # ---------- VNDB ----------
 
-def vndb(endpoint, payload):
-    req = urllib.request.Request(
-        f"{VNDB_API}/{endpoint}",
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=20) as r:
+def vndb(endpoint, payload, token=""):
+    headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+    if token:
+        headers["Authorization"] = f"Token {token}"
+    req = urllib.request.Request(f"{VNDB_API}/{endpoint}", data=json.dumps(payload).encode(),
+                                 headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)
+
+
+def vndb_get(endpoint, token):
+    req = urllib.request.Request(f"{VNDB_API}/{endpoint}", headers={
+        "Authorization": f"Token {token}", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise ValueError("VNDB didn't accept that token. Check you copied all of it.")
+        raise
 
 
 SUMMARY_FIELDS = "id, title, alttitle, released, image.url, developers.name, platforms"
@@ -523,6 +549,223 @@ def vndb_details(vid):
     }
 
 
+# ---------- VNDB list sync + characters ----------
+# VNDB allows about 200 requests per 5 minutes, so bulk calls are spaced out and retried on 429.
+
+VNDB_GAP = 1.6
+_last_call = [0.0]
+VNDB_LABELS_DIARY = {"Playing", "Finished", "Stalled", "Dropped"}
+LABEL_STATUS = {"Playing": "playing", "Finished": "completed", "Stalled": "dropped", "Dropped": "dropped"}
+PLATFORM_ORDER = ["win", "swi", "psv", "psp", "ps4"]
+ULIST_FIELDS = (
+    "id, added, voted, vote, started, finished, labels.id, labels.label, "
+    "vn.title, vn.alttitle, vn.released, vn.image.url, vn.image.sexual, vn.developers.name, vn.platforms, "
+    "vn.languages, vn.length_minutes, vn.rating, vn.tags.name, vn.tags.rating, vn.tags.spoiler"
+)
+
+
+def vndb_polite(endpoint, payload, token="", stop=None):
+    """vndb() with spacing between calls and a pause-and-retry when VNDB says slow down."""
+    for attempt in range(4):
+        wait = VNDB_GAP - (time.time() - _last_call[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_call[0] = time.time()
+        try:
+            return vndb(endpoint, payload, token)
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == 3:
+                raise
+            for _ in range(60):  # back off for a minute, but stay stoppable
+                if stop and stop.is_set():
+                    raise ValueError("Stopped")
+                time.sleep(1)
+
+
+def vndb_paged(endpoint, payload, token="", stop=None):
+    page = 1
+    while True:
+        res = vndb_polite(endpoint, {**payload, "page": page, "results": 100}, token, stop)
+        yield from res.get("results", [])
+        if not res.get("more"):
+            return
+        page += 1
+
+
+def day(ts):
+    return time.strftime("%Y-%m-%d", time.localtime(ts)) if isinstance(ts, (int, float)) else ""
+
+
+def list_entry_fields(e):
+    """Fields VNDB owns for one list entry. Never includes status/rating, which are the user's to edit."""
+    v = e.get("vn") or {}
+    labels = [l["label"] for l in e.get("labels") or []]
+    plats = v.get("platforms") or []
+    plat = next((VNDB_PLATFORMS[p] for p in PLATFORM_ORDER if p in plats), "other" if plats else "")
+    tags = sorted((t for t in v.get("tags") or [] if t.get("rating", 0) >= 1.5 and not t.get("spoiler")),
+                  key=lambda t: -t["rating"])
+    return {
+        "vndbVote": e.get("vote") or 0,
+        "vndbLabels": labels,
+        "startedOn": e.get("started") or "",
+        "finishedOn": e.get("finished") or "",
+        "vndbRating": v.get("rating") or 0,
+        "lengthMinutes": v.get("length_minutes") or 0,
+        "languages": v.get("languages") or [],
+        "tags": [t["name"] for t in tags[:30]],
+        "_new": {
+            "title": v.get("title") or e["id"],
+            "originalTitle": v.get("alttitle") or "",
+            "brand": ", ".join(d["name"] for d in v.get("developers") or []),
+            "cover": (v.get("image") or {}).get("url") or "",
+            "coverNsfw": ((v.get("image") or {}).get("sexual") or 0) > 1,
+            "released": v.get("released") or "",
+            "platform": plat,
+            "category": guess_category(v),
+            "addedAt": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(e["added"])) if e.get("added") else "",
+        },
+    }
+
+
+def sync_vndb_list(settings):
+    """Pull the user's VNDB list into the catalogue. Adds new games, refreshes VNDB-owned fields on
+    known ones, and only touches status/rating on games that haven't been set up yet."""
+    token, user = settings.get("vndbToken"), settings.get("vndbUser")
+    if not (token and user):
+        raise ValueError("No VNDB token yet. Add one in Settings.")
+    entries = list(vndb_paged("ulist", {"user": user, "fields": ULIST_FIELDS, "sort": "added"}, token))
+    added = updated = skipped = 0
+    with lock:
+        games = load_games()
+        by_vid = {g["vndbId"]: g for g in games if g.get("vndbId")}
+        for e in entries:
+            labels = [l["label"] for l in e.get("labels") or []]
+            if labels == ["Blacklist"]:
+                skipped += 1
+                continue
+            f = list_entry_fields(e)
+            new = f.pop("_new")
+            status = next((LABEL_STATUS[l] for l in labels if l in LABEL_STATUS), "unplayed")
+            g = by_vid.get(e["id"])
+            if g:
+                g.update(f)
+                if g.get("status", "unplayed") == "unplayed":
+                    g["status"] = status
+                if not g.get("rating") and f["vndbVote"]:
+                    g["rating"] = round(f["vndbVote"] / 20)
+                updated += 1
+            else:
+                g = {"id": new_id(new["title"]), "format": "", "status": status, "routes": [], "notes": "",
+                     "rating": round(f["vndbVote"] / 20) if f["vndbVote"] else 0,
+                     "vndbId": e["id"], "source": "vndb-list", **new, **f}
+                games.append(g)
+                by_vid[e["id"]] = g
+                added += 1
+            g["shelf"] = "diary" if VNDB_LABELS_DIARY & set(labels) else "collection"
+        write_json(GAMES_FILE, games)
+    return {"added": added, "updated": updated, "skipped": skipped, "listed": len(entries)}
+
+
+CHAR_FIELDS = ("id, name, original, image.url, image.sexual, sex, birthday, blood_type, height, "
+               "vns.id, vns.role, vns.spoiler, traits.id, traits.name, traits.group_name, traits.spoiler")
+CHAR_BATCH = 8
+chars_job = {"running": False, "done": 0, "total": 0, "message": "", "error": "", "stop": threading.Event()}
+
+
+def char_record(c):
+    img = c.get("image") or {}
+    return {
+        "id": c["id"], "name": c.get("name") or "", "original": c.get("original") or "",
+        "image": img.get("url") or "", "imageNsfw": (img.get("sexual") or 0) > 1,
+        "sex": c.get("sex") or [], "birthday": c.get("birthday"), "bloodType": c.get("blood_type") or "",
+        "height": c.get("height") or 0,
+        "traits": [{"id": t["id"], "name": t["name"], "group": t.get("group_name") or "",
+                    "spoiler": t.get("spoiler") or 0} for t in c.get("traits") or []],
+        "vns": [{"id": x["id"], "role": x.get("role") or "", "spoiler": x.get("spoiler") or 0}
+                for x in c.get("vns") or []],
+    }
+
+
+def fetch_characters(vids, stop):
+    """Characters and voice actors for a batch of VNs. Returns (characters, staff, vn->[char ids])."""
+    anyvn = ["or"] + [["id", "=", v] for v in vids]
+    chars = list(vndb_paged("character", {"filters": ["vn", "=", anyvn], "fields": CHAR_FIELDS}, stop=stop))
+    staff, voices = {}, {}
+    for v in vndb_paged("vn", {"filters": anyvn, "fields": "id, va.character.id, va.staff.id, va.staff.name, va.staff.original"},
+                        stop=stop):
+        for va in v.get("va") or []:
+            cid, s = (va.get("character") or {}).get("id"), va.get("staff") or {}
+            if cid and s.get("id"):
+                staff[s["id"]] = {"id": s["id"], "name": s.get("name") or "", "original": s.get("original") or ""}
+                voices.setdefault(cid, []).append({"vn": v["id"], "staff": s["id"]})
+    return chars, staff, voices
+
+
+def run_characters(scope):
+    job = chars_job
+    try:
+        with lock:
+            games = load_games()
+        todo = [g for g in games if g.get("vndbId") and not g.get("charsFetchedAt")
+                and (scope != "diary" or g.get("shelf") == "diary")]
+        job.update(total=len(todo), done=0, error="", message="")
+        for i in range(0, len(todo), CHAR_BATCH):
+            if job["stop"].is_set():
+                break
+            batch = todo[i:i + CHAR_BATCH]
+            chars, staff, voices = fetch_characters([g["vndbId"] for g in batch], job["stop"])
+            with lock:
+                all_chars = read_json(CHARACTERS_FILE, {})
+                all_staff = read_json(STAFF_FILE, {})
+                for c in chars:
+                    rec = char_record(c)
+                    rec["va"] = voices.get(c["id"], [])
+                    all_chars[c["id"]] = rec
+                all_staff.update(staff)
+                write_json(CHARACTERS_FILE, all_chars)
+                write_json(STAFF_FILE, all_staff)
+                games = load_games()
+                by_id = {g["id"]: g for g in games}
+                for b in batch:
+                    g = by_id.get(b["id"])
+                    if not g:
+                        continue
+                    mine = [c for c in all_chars.values() if any(x["id"] == g["vndbId"] for x in c["vns"])]
+                    g["charIds"] = [c["id"] for c in mine]
+                    g["charsFetchedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    by_name = {c["name"].casefold(): c["id"] for c in mine}
+                    for r in g.get("routes") or []:  # link the old hand-made routes to real characters
+                        r.setdefault("charId", by_name.get((r.get("name") or "").casefold(), ""))
+                write_json(GAMES_FILE, games)
+            job["done"] = min(i + CHAR_BATCH, len(todo))
+        job["message"] = "Stopped" if job["stop"].is_set() else "Done"
+    except (urllib.error.URLError, ValueError, OSError) as e:
+        job["error"] = str(getattr(e, "reason", e))
+    finally:
+        job["running"] = False
+
+
+def start_characters(scope):
+    if chars_job["running"]:
+        raise ValueError("Already fetching characters.")
+    chars_job["stop"].clear()
+    chars_job.update(running=True, done=0, total=0, message="Starting…", error="")
+    threading.Thread(target=run_characters, args=(scope,), daemon=True).start()
+
+
+def library_summary():
+    games = load_games()
+    return {
+        "games": len(games),
+        "withVndb": sum(1 for g in games if g.get("vndbId")),
+        "withCharacters": sum(1 for g in games if g.get("charsFetchedAt")),
+        "diary": sum(1 for g in games if g.get("shelf") == "diary"),
+        "characters": len(read_json(CHARACTERS_FILE, {})),
+        "staff": len(read_json(STAFF_FILE, {})),
+        "job": {k: v for k, v in chars_job.items() if k != "stop"},
+    }
+
+
 # ---------- HTTP ----------
 
 # ---------- Jiten (Japanese learning data) ----------
@@ -724,6 +967,12 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/jiten/(deck|vocab)/(\d+)", path)
             if m:
                 return self.send_json((jiten_deck if m.group(1) == "deck" else jiten_vocab)(m.group(2)))
+            if path == "/api/library/summary":
+                return self.send_json(library_summary())
+            if path == "/api/characters":
+                return self.send_json(read_json(CHARACTERS_FILE, {}))
+            if path == "/api/staff":
+                return self.send_json(read_json(STAFF_FILE, {}))
             if path == "/api/scan":
                 return self.send_json(scan_folders())
             if path == "/api/itch/owned":
@@ -754,6 +1003,14 @@ class Handler(BaseHTTPRequestHandler):
                     games.append(game)
                     write_json(GAMES_FILE, games)
                 return self.send_json(game, 201)
+            if path == "/api/vndb/sync-list":
+                return self.send_json(sync_vndb_list(load_settings()))
+            if path == "/api/characters/start":
+                start_characters("diary" if self.read_body().get("scope") == "diary" else "all")
+                return self.send_json(library_summary())
+            if path == "/api/characters/stop":
+                chars_job["stop"].set()
+                return self.send_json(library_summary())
             m = re.fullmatch(r"/api/launch/([\w-]+)", path)
             if m:
                 with lock:
@@ -767,6 +1024,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(game)
         except ValueError as e:
             return self.send_json({"error": str(e)}, 400)
+        except urllib.error.URLError as e:
+            return self.send_json({"error": f"VNDB request failed: {getattr(e, 'reason', e)}"}, 502)
         except OSError as e:
             return self.send_json({"error": f"Couldn't start: {e}"}, 500)
         self.send_json({"error": "Not found"}, 404)

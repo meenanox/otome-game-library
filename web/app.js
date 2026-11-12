@@ -845,8 +845,70 @@ function openSettings() {
   $("#itchKeyState").textContent = state.settings.itchKeySet
     ? "A key is saved. Paste a new one to replace it." : "No key saved yet.";
   $("#itchKeyClearWrap").hidden = !state.settings.itchKeySet;
+  $("#vndbToken").value = "";
+  $("#vndbTokenClear").checked = false;
+  $("#vndbTokenState").textContent = state.settings.vndbTokenSet
+    ? `Connected${state.settings.vndbUsername ? " as " + state.settings.vndbUsername : ""}. Paste a new token to replace it.`
+    : "Not connected.";
+  $("#vndbTokenClearWrap").hidden = !state.settings.vndbTokenSet;
+  $("#vndbSyncBtn").disabled = $("#charsStartBtn").disabled = !state.settings.vndbTokenSet;
+  refreshSummary();
   $("#settingsDialog").showModal();
 }
+
+// ---------- VNDB list + characters ----------
+
+let summaryTimer = null;
+
+async function refreshSummary() {
+  clearTimeout(summaryTimer);
+  try {
+    const s = await api("GET", "/api/library/summary");
+    const j = s.job || {};
+    $("#vndbSummary").textContent =
+      `${s.games} games (${s.withVndb} on VNDB, ${s.diary} in the diary) · ${s.characters} characters · ${s.staff} voice actors · ` +
+      `characters fetched for ${s.withCharacters}/${s.withVndb} games` +
+      (j.running ? ` — fetching ${j.done}/${j.total}…` : j.error ? ` — stopped: ${j.error}` : j.message ? ` — ${j.message}` : "");
+    $("#charsStopBtn").hidden = !j.running;
+    $("#charsStartBtn").hidden = !!j.running;
+    if (j.running) summaryTimer = setTimeout(refreshSummary, 3000);
+    else if (j.message === "Done") { state.games = await api("GET", "/api/games"); render(); }
+  } catch (err) {
+    $("#vndbSummary").textContent = err.message;
+  }
+}
+
+$("#vndbSyncBtn").addEventListener("click", async () => {
+  const btn = $("#vndbSyncBtn");
+  btn.disabled = true;
+  btn.textContent = "Syncing…";
+  try {
+    const r = await api("POST", "/api/vndb/sync-list", {});
+    state.games = await api("GET", "/api/games");
+    render();
+    toast(`VNDB list: ${r.added} added, ${r.updated} updated${r.skipped ? `, ${r.skipped} blacklisted skipped` : ""}`);
+    refreshSummary();
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    btn.disabled = !state.settings.vndbTokenSet;
+    btn.textContent = "Sync my VNDB list";
+  }
+});
+
+$("#charsStartBtn").addEventListener("click", async () => {
+  try {
+    await api("POST", "/api/characters/start", {});
+    refreshSummary();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
+$("#charsStopBtn").addEventListener("click", async () => {
+  await api("POST", "/api/characters/stop", {});
+  refreshSummary();
+});
 
 $("#settingsForm").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -870,6 +932,8 @@ $("#settingsForm").addEventListener("submit", async (e) => {
       clearJitenKey: $("#jitenKeyClear").checked,
       itchApiKey: $("#itchKey").value.trim(),
       clearItchKey: $("#itchKeyClear").checked,
+      vndbToken: $("#vndbToken").value.trim(),
+      clearVndbToken: $("#vndbTokenClear").checked,
     });
     $("#settingsDialog").close();
     toast("Settings saved");

@@ -40,4 +40,10 @@ with the known-% you'd reach. Names are hidden by default. Copy the list, or **D
 Lapis note-type layout (22 fields + tags) with word, furigana, reading, definitions, pitch accent and frequency filled in. Sentence, audio and
 picture fields are left empty for Yomitan to fill. Note type, deck and tags are editable under Settings.
 
+**VNDB list & characters:** add a VNDB token (vndb.org/u/tokens, **listread** ticked) under Settings, save, then
+**Sync my VNDB list**. New games are added with their VNDB status and vote, and games already in the catalogue keep their
+own status and rating. Playing / Finished / Stalled / Dropped games get `shelf: "diary"`, everything else `"collection"`.
+**Fetch characters & voice actors** then fills `data/characters.json` and `data/staff.json` in the background (spaced out
+to stay inside VNDB's rate limit, so ~1,700 games takes a while; Stop and resume any time).
+
 Port 8765 is avoided on purpose: AnkiConnect uses it. Set a `PORT` environment variable to change the port.
