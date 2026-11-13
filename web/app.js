@@ -1030,7 +1030,7 @@ function openSettings() {
     ? `Connected${state.settings.vndbUsername ? " as " + state.settings.vndbUsername : ""}. Paste a new token to replace it.`
     : "Not connected.";
   $("#vndbTokenClearWrap").hidden = !state.settings.vndbTokenSet;
-  $("#vndbSyncBtn").disabled = $("#charsStartBtn").disabled = !state.settings.vndbTokenSet;
+  $("#vndbSyncBtn").disabled = !state.settings.vndbTokenSet; // only your own list needs a token; characters are public data
   refreshSummary();
   $("#settingsDialog").showModal();
 }
@@ -1640,12 +1640,30 @@ function tierPage(title, empty, build) {
 }
 
 VIEWS.litiers = tierPage("LI Tier List", "No love interests yet. Sync your VNDB list and fetch characters in Settings, or add routes to a game.", () => {
-  const list = allLIs().filter((l) => !tierUI.category || l.g.category === tierUI.category);
-  const items = list.map((l) => ({ key: l.key, tier: l.tier, img: l.image || l.g.cover, label: l.name, sub: l.g.title }));
-  const byKey = Object.fromEntries(list.map((l) => [l.key, l]));
+  // The same character often appears in several entries (ports, remakes, fandiscs, a bundle's two games): show them once.
+  // Same VNDB character id, or failing that the same Japanese name voiced by the same actor.
+  const identity = (l) => l.r.charId || (l.original ? `n:${l.original}|${l.va || ""}` : `k:${l.key}`);
+  const groups = new Map();
+  for (const l of allLIs().filter((x) => !tierUI.category || x.g.category === tierUI.category)) {
+    const id = identity(l);
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(l);
+  }
+  const byKey = {};
+  const items = [...groups.entries()].map(([id, ls]) => {
+    byKey[id] = ls;
+    const lead = ls.find((l) => l.tier) || ls[0];
+    const games = [...new Set(ls.map((l) => l.g.title))];
+    return { key: id, tier: lead.tier, img: ls.find((l) => l.image)?.image || lead.g.cover, label: lead.name,
+             sub: games.length > 2 ? `${games[0]} + ${games.length - 1} more` : games.join(" · ") };
+  });
   items.handlers = {
-    setTier: (it, tier) => { const l = byKey[it.key]; l.r.tier = tier; return saveGame(l.g).catch((e) => toast(e.message, "error")); },
-    open: (it) => { detailTab = "overview"; openDetail(byKey[it.key].g.id); },
+    setTier: async (it, tier) => {
+      const ls = byKey[it.key];
+      ls.forEach((l) => { l.r.tier = tier; });
+      for (const g of new Set(ls.map((l) => l.g))) await saveGame(g).catch((e) => toast(e.message, "error"));
+    },
+    open: (it) => { detailTab = "overview"; openDetail(byKey[it.key][0].g.id); },
   };
   return items;
 });
