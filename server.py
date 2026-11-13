@@ -44,7 +44,7 @@ DEFAULT_SETTINGS = {
     "emulators": {
         "ppsspp": {"name": "PPSSPP (PSP)", "path": "", "args": "{rom}", "folders": []},
         "vita3k": {"name": "Vita3K (PS Vita)", "path": "", "args": "-r {rom}", "folders": []},
-        "switch": {"name": "Switch emulator", "path": "", "args": "{rom}", "folders": []},
+        "switch": {"name": "Switch emulator", "path": "", "args": "{rom}", "folders": [], "dlcFolders": []},
     }
 }
 
@@ -528,6 +528,89 @@ def scan_folders():
                     errors.append(f"Couldn't read {here}: {e}")
     found.sort(key=lambda x: (x["platform"], x["title"].casefold()))
     return {"items": found, "errors": errors[:20]}
+
+
+# ---------- Switch DLC / updates ----------
+
+SWITCH_TITLE_ID = re.compile(r"(?<![0-9A-Fa-f])(01[0-9A-Fa-f]{14})(?![0-9A-Fa-f])")
+SWITCH_VERSION = re.compile(r"[\[\s_]v(\d+)\b", re.I)
+
+
+def switch_title_kind(tid):
+    """Switch title IDs: a base game ends in 000, its update in 800, and its DLC sit in the next
+    4096-block up (base 0100AAAABBBBC000 -> DLC 0100AAAABBBBD001, D002, ...).
+    Returns (kind, base title ID)."""
+    n = int(tid, 16)
+    low = n & 0xFFF
+    if low == 0x800:
+        return "update", f"{n & ~0xFFF:016X}"
+    if low == 0:
+        return "base", f"{n:016X}"
+    return "dlc", f"{(((n >> 12) - 1) << 12):016X}"
+
+
+def switch_id_in(name):
+    m = SWITCH_TITLE_ID.search(name)
+    return m.group(1).upper() if m else ""
+
+
+def check_dlc():
+    """Compare the files in the Switch DLC / update folders with the Switch games in the library."""
+    settings = load_settings()
+    folders = settings["emulators"].get("switch", {}).get("dlcFolders") or []
+    if not folders:
+        raise ValueError("Add your Switch DLC / update folders in Settings first.")
+    games = [g for g in load_games() if g.get("romPath") and
+             (g.get("emulator") == "switch" or g.get("platform") == "switch")]
+    owned, no_id = {}, []
+    for g in games:
+        tid = switch_id_in(os.path.basename(g["romPath"])) or switch_id_in(g.get("serial") or "")
+        if tid:
+            owned.setdefault(switch_title_kind(tid)[1], []).append(g)
+        else:
+            no_id.append(g["title"])
+
+    files, errors, untagged = [], [], []
+    for folder in folders:
+        root = Path(os.path.expandvars(folder.strip().strip('"')))
+        if not root.is_dir():
+            errors.append(f"Folder not found: {folder}")
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            if len(Path(dirpath).relative_to(root).parts) >= MAX_SCAN_DEPTH:
+                dirnames[:] = []
+            for name in filenames:
+                if Path(name).suffix.lower() not in SCAN_EXTS["switch"]:
+                    continue
+                tid = switch_id_in(name)
+                if not tid:
+                    untagged.append(name)
+                    continue
+                kind, base = switch_title_kind(tid)
+                v = SWITCH_VERSION.search(name)
+                files.append({"file": name, "path": str(Path(dirpath) / name), "titleId": tid, "kind": kind,
+                              "baseId": base, "version": int(v.group(1)) if v else None})
+
+    by_base = {}
+    for f in files:
+        by_base.setdefault(f["baseId"], []).append(f)
+    newest_first = lambda f: (-(f["version"] if f["version"] is not None else -1), f["file"])
+    matched, orphans = [], []
+    for base, fs in by_base.items():
+        if base in owned:
+            for g in owned[base]:
+                matched.append({"id": g["id"], "title": g["title"], "titleId": base,
+                                "updates": sorted((f for f in fs if f["kind"] == "update"), key=newest_first),
+                                "dlc": sorted((f for f in fs if f["kind"] == "dlc"), key=lambda f: f["titleId"]),
+                                "base": [f for f in fs if f["kind"] == "base"]})
+        else:
+            orphans.extend(fs)
+    lacking = [g["title"] for base, gs in owned.items() if base not in by_base for g in gs]
+    matched.sort(key=lambda m: m["title"].casefold())
+    orphans.sort(key=lambda f: (f["baseId"], f["titleId"]))
+    return {"matched": matched, "orphans": orphans, "lacking": sorted(lacking, key=str.casefold),
+            "noId": sorted(no_id, key=str.casefold), "untagged": sorted(untagged), "errors": errors[:20],
+            "files": len(files), "games": len(games)}
 
 
 # ---------- itch.io ----------
@@ -1102,6 +1185,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(read_json(CHARACTERS_FILE, {}))
             if path == "/api/staff":
                 return self.send_json(read_json(STAFF_FILE, {}))
+            if path == "/api/dlc/check":
+                return self.send_json(check_dlc())
             if path == "/api/scan":
                 return self.send_json(scan_folders())
             if path == "/api/itch/owned":

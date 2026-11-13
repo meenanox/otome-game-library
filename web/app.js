@@ -1009,6 +1009,8 @@ function openSettings() {
         <input data-k="args" placeholder="{rom}" value="${esc(e.args)}" title="Arguments">
       </div>
       <textarea data-k="folders" rows="2" placeholder="${esc(FOLDER_HINTS[k] || "Game folders to scan, one per line")}">${esc((e.folders || []).join("\n"))}</textarea>
+      ${k === "switch" ? `<label class="dlc-label">DLC / UPDATES
+        <textarea data-k="dlcFolders" rows="2" placeholder="Switch DLC and update folders (NSP / XCI), one per line">${esc((e.dlcFolders || []).join("\n"))}</textarea></label>` : ""}
     </div>`).join("");
   $("#readingSpeed").value = state.settings.readingSpeed || 14000;
   $("#jitenKey").value = "";
@@ -1143,6 +1145,8 @@ $("#settingsForm").addEventListener("submit", async (e) => {
       folders: $('[data-k="folders"]', row).value.split("\n")
         .map((f) => f.trim().replace(/^"|"$/g, "")).filter(Boolean),
     };
+    const dlc = $('[data-k="dlcFolders"]', row);
+    if (dlc) emulators[k].dlcFolders = dlc.value.split("\n").map((f) => f.trim().replace(/^"|"$/g, "")).filter(Boolean);
   });
   try {
     state.settings = await api("PUT", "/api/settings", {
@@ -1568,6 +1572,48 @@ async function applyCheck() {
   toast(`Linked ${linked} game${linked === 1 ? "" : "s"} to your folders`);
 }
 
+// ---------- Switch DLC / updates ----------
+
+async function openDlc() {
+  startImport("dlc", "Switch DLC & updates", "Reading your DLC / update folders…");
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button>`;
+  if (!(state.settings.emulators.switch?.dlcFolders || []).length) {
+    $("#itchBody").innerHTML = `<p>Add your <b>DLC / UPDATES</b> folders under the Switch emulator in <b>Settings</b> first.</p>`;
+    $("#itchFoot").innerHTML = `<button class="primary" id="dlcToSettings">Open Settings</button>`;
+    $("#dlcToSettings").onclick = () => { $("#itchDialog").close(); openSettings(); };
+    return;
+  }
+  try {
+    renderDlc(await api("GET", "/api/dlc/check"));
+  } catch (e) {
+    $("#itchBody").innerHTML = `<p>${esc(e.message)}</p>`;
+  }
+}
+
+function renderDlc(r) {
+  const ver = (f) => f.version != null ? `v${f.version}` : "version unknown";
+  const dlcN = r.matched.reduce((n, m) => n + m.dlc.length, 0);
+  const updN = r.matched.filter((m) => m.updates.length).length;
+  const row = (title, sub, extra = "") => `<div class="dlc-row"><b>${esc(title)}</b>${sub ? `<small>${sub}</small>` : ""}${extra}</div>`;
+  const section = (head, note, rows, open = true) => rows.length ? `<details class="dlc-sec" ${open ? "open" : ""}>
+    <summary>${esc(head)} <span class="muted">(${rows.length})</span></summary>${note ? `<p class="muted">${note}</p>` : ""}${rows.join("")}</details>` : "";
+  $("#itchBody").innerHTML = `
+    <p class="muted">Matched ${fmt(r.files)} files by title ID against your ${fmt(r.games)} Switch games. ${updN} game${updN === 1 ? " has" : "s have"} an update and ${dlcN} DLC file${dlcN === 1 ? " is" : "s are"} matched.</p>
+    ${r.errors.map((e) => `<p class="muted">⚠ ${esc(e)}</p>`).join("")}
+    ${section("Games with updates or DLC", "", r.matched.map((m) => {
+      const up = m.updates[0];
+      const parts = [up ? `Update ${ver(up)}${m.updates.length > 1 ? ` (+${m.updates.length - 1} older)` : ""}` : "No update",
+        m.dlc.length ? `${m.dlc.length} DLC` : "No DLC"];
+      return row(m.title, esc(parts.join(" · ")), m.dlc.length ? `<small class="dlc-list">${m.dlc.map((f) => esc(f.file)).join("<br>")}</small>` : "");
+    }))}
+    ${section("Files with no matching game", "These belong to a game that isn't in your library, or isn't linked to its file yet.",
+      r.orphans.map((f) => row(f.file, esc(`${f.kind === "base" ? "base game" : f.kind} · belongs to ${f.baseId}`))))}
+    ${section("Owned games with no update or DLC files", "", r.lacking.map((t) => row(t, "")), false)}
+    ${section("Games I couldn't read a title ID for", "The game's file name has no [title ID], so it can't be matched.", r.noId.map((t) => row(t, "")), false)}
+    ${section("Files with no title ID", "Rename them to include the [16-character ID] so they can be matched.", r.untagged.map((t) => row(t, "")), false)}
+    ${r.files || r.untagged.length || r.errors.length ? "" : `<p class="muted">No Switch files found in your DLC / update folders.</p>`}`;
+}
+
 // ---------- global wiring ----------
 
 function setTheme(t) {
@@ -1935,6 +1981,7 @@ $("#settingsBtn").onclick = openSettings;
 $("#itchBtn").onclick = openItch;
 $("#scanBtn").onclick = openScan;
 $("#checkBtn").onclick = openCheck;
+$("#dlcBtn").onclick = openDlc;
 $("#search").addEventListener("input", (e) => { state.filter.q = e.target.value; render(); });
 $("#sort").onchange = (e) => { state.sort = e.target.value; render(); };
 

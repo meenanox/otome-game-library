@@ -473,3 +473,11 @@ table.learn td:nth-child(2) { white-space: nowrap; }
 .conf.have, .conf.dupe, .conf.off { background: var(--st-none); }
 .conf.weak { background: var(--st-progress); color: #fff; }
 .conf.link { background: var(--st-good); color: #fff; }
+
+.dlc-label { display: grid; gap: 4px; font-size: 12px; font-weight: 700; letter-spacing: .08em; color: var(--muted); margin-top: 6px; }
+.dlc-sec { margin: 8px 0; }
+.dlc-sec summary { cursor: pointer; font-weight: 600; font-size: 15px; padding: 4px 0; }
+.dlc-row { padding: 6px 10px; border: 1px solid var(--border); border-radius: 10px; margin: 4px 0; background: var(--surface); }
+.dlc-row small { display: block; }
+.dlc-list { margin-top: 4px; font-size: 12px; }
+.dlc-label textarea { font-weight: 400; letter-spacing: normal; text-transform: none; }
