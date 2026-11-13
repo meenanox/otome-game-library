@@ -1592,15 +1592,25 @@ async function openDlc() {
 
 let dlcLast = null;
 
-function dlcGuess(file) {
-  const n = (t) => t.toLowerCase().replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9fff]+/g, "");
-  const f = n(file.replace(/\[[^\]]*\]/g, ""));
-  const hit = state.games.filter((g) => switchGame(g) && n(g.title).length > 3 && f.includes(n(g.title)))
-    .sort((a, b) => b.title.length - a.title.length)[0];
-  return hit ? hit.title : "";
+const dlcNorm = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9fff]+/g, "");
+const switchGame = (g) => g.platform === "switch" || g.emulator === "switch";
+
+// Library games whose title or Japanese title contains what was typed. Switch games first.
+function dlcSuggest(q, limit = 8) {
+  const words = String(q || "").toLowerCase().split(/\s+/).map(dlcNorm).filter(Boolean);
+  if (!words.length) return [];
+  return state.games
+    .filter((g) => { const hay = dlcNorm(`${g.title} ${g.originalTitle || ""}`); return words.every((w) => hay.includes(w)); })
+    .sort((a, b) => switchGame(b) - switchGame(a) || a.title.localeCompare(b.title))
+    .slice(0, limit);
 }
 
-const switchGame = (g) => g.platform === "switch" || g.emulator === "switch";
+function dlcGuess(file) {
+  const f = dlcNorm(file.replace(/\[[^\]]*\]/g, ""));
+  const hit = state.games.filter((g) => [g.title, g.originalTitle].some((t) => dlcNorm(t).length > 3 && f.includes(dlcNorm(t))))
+    .sort((a, b) => switchGame(b) - switchGame(a) || b.title.length - a.title.length)[0];
+  return hit || null;
+}
 
 function renderDlc(r) {
   dlcLast = r;
@@ -1613,12 +1623,12 @@ function renderDlc(r) {
   const kindSelect = (f) => `<select data-dlc-kind aria-label="Update or DLC">
     <option value="dlc" ${f.kind === "dlc" ? "selected" : ""}>DLC</option>
     <option value="update" ${f.kind === "update" ? "selected" : ""}>Update</option></select>`;
-  const assignRow = (f, sub) => `<div class="dlc-row" data-path="${esc(f.path)}"><b>${esc(f.file)}</b>${sub ? `<small>${sub}</small>` : ""}
-    <div class="dlc-assign"><input list="dlcGames" data-dlc-game placeholder="Which game is this for?" value="${esc(dlcGuess(f.file))}">
+  const assignRow = (f, sub, guess = dlcGuess(f.file)) => `<div class="dlc-row" data-path="${esc(f.path)}"><b>${esc(f.file)}</b>${sub ? `<small>${sub}</small>` : ""}
+    <div class="dlc-assign"><div class="dlc-pick"><input data-dlc-game autocomplete="off" placeholder="Start typing a game's name…"
+        value="${esc(guess?.title || "")}" data-game-id="${esc(guess?.id || "")}"><ul class="dlc-suggest" hidden></ul></div>
       ${kindSelect(f)}<button type="button" data-dlc-assign>Assign</button></div></div>`;
   const handFiles = (m) => [...m.updates, ...m.dlc].filter((f) => f.manual);
   $("#itchBody").innerHTML = `
-    <datalist id="dlcGames">${state.games.filter(switchGame).map((g) => `<option value="${esc(g.title)}"></option>`).join("")}</datalist>
     <p class="muted">Matched ${fmt(r.files)} files by title ID against your ${fmt(r.games)} Switch games. ${updN} game${updN === 1 ? " has" : "s have"} an update and ${dlcN} DLC file${dlcN === 1 ? " is" : "s are"} matched.</p>
     ${r.errors.map((e) => `<p class="muted">⚠ ${esc(e)}</p>`).join("")}
     ${section("Games with updates or DLC", "", r.matched.map((m) => {
@@ -1649,16 +1659,47 @@ async function dlcChange(url, body) {
   }
 }
 
+function showDlcSuggest(input) {
+  const list = input.parentElement.querySelector(".dlc-suggest");
+  const hits = dlcSuggest(input.value);
+  list.innerHTML = hits.map((g) => `<li data-id="${esc(g.id)}" data-title="${esc(g.title)}"><b>${esc(g.title)}</b>
+    <small>${esc([g.originalTitle, LABELS.platform[g.platform] || g.platform].filter((x) => x && x !== g.title).join(" · "))}</small></li>`).join("")
+    || `<li class="none">No game in your library matches</li>`;
+  list.hidden = !input.value.trim();
+}
+
+$("#itchDialog").addEventListener("input", (e) => {
+  if (itch.source !== "dlc" || !e.target.matches("[data-dlc-game]")) return;
+  e.target.dataset.gameId = ""; // typing again clears the earlier pick
+  showDlcSuggest(e.target);
+});
+$("#itchDialog").addEventListener("focusin", (e) => {
+  if (itch.source === "dlc" && e.target.matches("[data-dlc-game]") && e.target.value.trim() && !e.target.dataset.gameId) showDlcSuggest(e.target);
+});
+$("#itchDialog").addEventListener("focusout", (e) => {
+  if (itch.source !== "dlc" || !e.target.matches("[data-dlc-game]")) return;
+  setTimeout(() => { const l = e.target.parentElement?.querySelector(".dlc-suggest"); if (l) l.hidden = true; }, 150);
+});
+
 $("#itchDialog").addEventListener("click", (e) => {
   if (itch.source !== "dlc") return;
+  const pick = e.target.closest(".dlc-suggest li[data-id]");
+  if (pick) {
+    const input = pick.closest(".dlc-pick").querySelector("input");
+    input.value = pick.dataset.title;
+    input.dataset.gameId = pick.dataset.id;
+    pick.closest(".dlc-suggest").hidden = true;
+    return;
+  }
   const rm = e.target.closest("[data-dlc-remove]");
   if (rm) return dlcChange("/api/dlc/unassign", { gameId: rm.dataset.game, path: rm.dataset.dlcRemove, kind: "dlc" });
   const btn = e.target.closest("[data-dlc-assign]");
   if (!btn) return;
   const rowEl = btn.closest(".dlc-row");
-  const title = $("[data-dlc-game]", rowEl).value.trim();
-  const game = state.games.find((g) => switchGame(g) && g.title === title);
-  if (!game) return toast("Pick a game from the list first", "error");
+  const input = $("[data-dlc-game]", rowEl), title = input.value.trim();
+  const game = state.games.find((g) => g.id === input.dataset.gameId) ||
+    state.games.find((g) => g.title === title || g.originalTitle === title);
+  if (!game) return toast("Pick a game from the suggestions first", "error");
   dlcChange("/api/dlc/assign", { gameId: game.id, path: rowEl.dataset.path, kind: $("[data-dlc-kind]", rowEl).value });
 });
 

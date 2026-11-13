@@ -486,3 +486,11 @@ table.learn td:nth-child(2) { white-space: nowrap; }
 .dlc-assign input { flex: 1 1 220px; }
 .dlc-assign select { width: auto; }
 button.link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font-size: 12px; }
+.dlc-pick { position: relative; flex: 1 1 220px; }
+.dlc-pick input { width: 100%; }
+.dlc-suggest { position: absolute; z-index: 5; left: 0; right: 0; top: 100%; margin: 4px 0 0; padding: 4px; list-style: none;
+  max-height: 240px; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 24px rgb(0 0 0 / .18); }
+.dlc-suggest li { padding: 6px 10px; border-radius: 8px; cursor: pointer; }
+.dlc-suggest li:hover { background: var(--surface-2); }
+.dlc-suggest li.none { color: var(--muted); cursor: default; }
+.dlc-suggest small { display: block; }
