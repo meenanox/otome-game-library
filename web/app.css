@@ -494,3 +494,7 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); tex
 .dlc-suggest li:hover { background: var(--surface-2); }
 .dlc-suggest li.none { color: var(--muted); cursor: default; }
 .dlc-suggest small { display: block; }
+
+.itch-row.has-act { grid-template-columns: auto 48px 1fr auto; }
+.itch-row.done .link { opacity: 1; }
+.check-result .link { margin-top: 2px; }

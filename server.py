@@ -475,10 +475,33 @@ def rom_key(rom):
     return rom if VITA_TITLE_ID.match(rom) else os.path.normcase(os.path.normpath(rom))
 
 
+IGNORE_FILE = DATA / "ignored.json"  # files the user doesn't want offered again: {"scan": {key: {title, path}}, "dlc": {...}}
+
+
+def load_ignored():
+    data = read_json(IGNORE_FILE, {})
+    return {"scan": data.get("scan") or {}, "dlc": data.get("dlc") or {}}
+
+
+def set_ignored(which, path, title, ignore=True):
+    """Hide a scanned game file (which="scan") or a DLC / update file (which="dlc") from future scans, or bring it back."""
+    if which not in ("scan", "dlc") or not path:
+        raise ValueError("Nothing to ignore")
+    with lock:
+        data = load_ignored()
+        if ignore:
+            data[which][rom_key(path)] = {"title": str(title or path), "path": path}
+        else:
+            data[which].pop(rom_key(path), None)
+        write_json(IGNORE_FILE, data)
+    return {"ok": True}
+
+
 def scan_folders():
     settings = load_settings()
     games = load_games()
     known = {rom_key(g["romPath"]) for g in games if g.get("romPath")}
+    ignored = load_ignored()["scan"]
     found, errors = [], []
 
     def add(emulator, rom, title, serial, where):
@@ -487,7 +510,7 @@ def scan_folders():
         found.append({
             "key": rom, "emulator": emulator, "platform": EMULATOR_PLATFORM.get(emulator, "other"),
             "romPath": rom, "title": title, "serial": serial, "location": where,
-            "imported": rom_key(rom) in known,
+            "imported": rom_key(rom) in known, "ignored": rom_key(rom) in ignored,
         })
 
     for emulator, emu in settings["emulators"].items():
@@ -572,6 +595,8 @@ def check_dlc():
         else:
             no_id.append(g["title"])
     manual = {rom_key(e["path"]): (g, e.get("kind", "dlc")) for g in all_games for e in g.get("dlcFiles") or []}
+    ignored = load_ignored()["dlc"]
+    ignored_files = []
 
     files, errors, untagged = [], [], []
     assigned = {}  # game id -> files placed by hand
@@ -595,6 +620,9 @@ def check_dlc():
                     assigned.setdefault(hand[0]["id"], []).append(
                         {"file": name, "path": path, "titleId": tid, "kind": hand[1], "baseId": "",
                          "version": version, "manual": True})
+                    continue
+                if rom_key(path) in ignored:
+                    ignored_files.append({"file": name, "path": path})
                     continue
                 if not tid:
                     untagged.append({"file": name, "path": path})
@@ -634,7 +662,8 @@ def check_dlc():
     orphans.sort(key=lambda f: (f["baseId"], f["titleId"]))
     untagged.sort(key=lambda f: f["file"].casefold())
     return {"matched": matched, "orphans": orphans, "lacking": sorted(lacking, key=str.casefold),
-            "noId": sorted(no_id, key=str.casefold), "untagged": untagged, "errors": errors[:20],
+            "noId": sorted(no_id, key=str.casefold), "untagged": untagged,
+            "ignored": sorted(ignored_files, key=lambda f: f["file"].casefold()), "errors": errors[:20],
             "files": len(files) + len(untagged) + sum(len(v) for v in assigned.values()), "games": len(games)}
 
 
@@ -662,6 +691,7 @@ def assign_dlc(game_id, path, kind, remove=False):
         if not remove:
             game.setdefault("dlcFiles", []).append({"path": path, "kind": kind})
         write_json(GAMES_FILE, games)
+    set_ignored("dlc", path, "", ignore=False)  # assigning a file means it isn't ignored any more
     return {"ok": True}
 
 
@@ -1271,6 +1301,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(game, 201)
             if path == "/api/library/reset":
                 return self.send_json(reset_library(self.read_body().get("mode")))
+            if path == "/api/ignore":
+                b = self.read_body()
+                return self.send_json(set_ignored(b.get("list"), b.get("path") or "", b.get("title"), b.get("ignore") is not False))
             if path in ("/api/dlc/assign", "/api/dlc/unassign"):
                 b = self.read_body()
                 return self.send_json(assign_dlc(b.get("gameId"), b.get("path") or "", b.get("kind") or "dlc",

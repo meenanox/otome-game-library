@@ -1170,12 +1170,12 @@ $("#settingsForm").addEventListener("submit", async (e) => {
 // ---------- itch.io import ----------
 
 const CONFIDENCE = { release: "matching release", serial: "exact serial", link: "exact store link", title: "same title", possible: "possible match", none: "no match", error: "lookup failed" };
-const itch = { source: "itch", items: [], errors: [], selected: new Set(), q: "", type: "game", showImported: false, rows: [], busy: false, run: 0 };
+const itch = { source: "itch", items: [], errors: [], selected: new Set(), q: "", type: "game", showImported: false, showIgnored: false, rows: [], busy: false, run: 0 };
 const thumb = (src) => src ? `<img src="${esc(src)}" alt="" loading="lazy">` : `<span class="noimg"></span>`;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function startImport(source, title, loading) {
-  Object.assign(itch, { source, items: [], errors: [], q: "", type: source === "itch" ? "game" : "all", showImported: false });
+  Object.assign(itch, { source, items: [], errors: [], q: "", type: source === "itch" ? "game" : "all", showImported: false, showIgnored: false });
   itch.selected.clear();
   itch.run++;
   $("#importTitle").textContent = title;
@@ -1231,6 +1231,7 @@ function itchVisible() {
   return itch.items.filter((it) =>
     (itch.type === "all" || it.classification === itch.type) &&
     (itch.showImported || !it.imported) &&
+    (itch.showIgnored || !it.ignored) &&
     (!needle || `${it.title} ${it.developer}`.toLowerCase().includes(needle)));
 }
 
@@ -1244,6 +1245,7 @@ function renderItchPick() {
         ${types.map((t) => `<option value="${esc(t)}" ${t === itch.type ? "selected" : ""}>${esc(t.replace("_", " "))}</option>`).join("")}
       </select>
       <label class="inline"><input type="checkbox" id="itchShowImported" ${itch.showImported ? "checked" : ""}> Show already imported</label>
+      ${itch.source === "scan" ? `<label class="inline"><input type="checkbox" id="itchShowIgnored" ${itch.showIgnored ? "checked" : ""}> Show ignored (${itch.items.filter((it) => it.ignored).length})</label>` : ""}
       <button type="button" class="ghost" id="itchAll">Tick all shown</button>
       <button type="button" class="ghost" id="itchNone">Clear</button>
     </div>
@@ -1256,7 +1258,8 @@ function renderItchPick() {
   $("#itchQ").oninput = (e) => { itch.q = e.target.value; renderItchList(); };
   $("#itchType").onchange = (e) => { itch.type = e.target.value; renderItchList(); };
   $("#itchShowImported").onchange = (e) => { itch.showImported = e.target.checked; renderItchList(); };
-  $("#itchAll").onclick = () => { itchVisible().filter((it) => !it.imported).forEach((it) => itch.selected.add(it.id)); renderItchList(); };
+  if ($("#itchShowIgnored")) $("#itchShowIgnored").onchange = (e) => { itch.showIgnored = e.target.checked; renderItchList(); };
+  $("#itchAll").onclick = () => { itchVisible().filter((it) => !it.imported && !it.ignored).forEach((it) => itch.selected.add(it.id)); renderItchList(); };
   $("#itchNone").onclick = () => { itch.selected.clear(); renderItchList(); };
   $("#itchList").onchange = (e) => {
     const id = e.target.dataset.itch;
@@ -1268,13 +1271,14 @@ function renderItchPick() {
 function renderItchList() {
   const list = itchVisible();
   $("#itchList").innerHTML = list.map((it) => `
-    <label class="itch-row ${it.imported ? "done" : ""}" title="${esc(it.location || it.url || "")}">
-      <input type="checkbox" data-itch="${esc(it.id)}" ${itch.selected.has(it.id) ? "checked" : ""} ${it.imported ? "disabled" : ""}>
+    <label class="itch-row ${it.imported || it.ignored ? "done" : ""} ${itch.source === "scan" ? "has-act" : ""}" title="${esc(it.location || it.url || "")}">
+      <input type="checkbox" data-itch="${esc(it.id)}" ${itch.selected.has(it.id) ? "checked" : ""} ${it.imported || it.ignored ? "disabled" : ""}>
       ${thumb(it.cover)}
       <span><b>${esc(it.title)}</b>
         <small>${esc([it.developer, it.classification.replace("_", " "),
           itch.source === "itch" ? (it.purchased ? "purchased" : "bundle / claim") : "…\\" + it.location.split(/[\\/]/).slice(-2).join("\\"),
-          it.imported ? "already in library" : ""].filter(Boolean).join(" · "))}</small></span>
+          it.imported ? "already in library" : "", it.ignored ? "ignored" : ""].filter(Boolean).join(" · "))}</small></span>
+      ${itch.source === "scan" && !it.imported ? `<button type="button" class="link" data-ignore-scan="${esc(it.id)}">${it.ignored ? "Restore" : "Ignore"}</button>` : ""}
     </label>`).join("") || `<p class="muted">Nothing matches.</p>`;
   renderItchPickFoot();
 }
@@ -1474,7 +1478,7 @@ async function openCheck() {
   const run = check.run = itch.run;
   try {
     const res = await api("GET", "/api/scan");
-    const files = res.items.filter((it) => !it.imported);
+    const files = res.items.filter((it) => !it.imported && !it.ignored);
     const entries = (vid) => state.games.filter((g) => g.vndbId === vid);
     check.rows = files.map((item, i) => ({ i, item, match: null, kind: "", game: null, use: false }));
     $("#itchBody").innerHTML = `
@@ -1527,7 +1531,8 @@ function checkRowHTML(row) {
   const result = !m ? `<span class="muted">Looking up…</span>`
     : `<span class="conf ${esc(m.confidence)}">${esc(CHECK_NOTE[row.kind])}</span>
        ${m.vn ? `<small>${esc([m.vn.title, year(m.vn.released)].filter(Boolean).join(" · "))}</small>` : ""}
-       ${linkable ? `<small>→ ${esc(row.games.map((g) => g.title).join(" + "))}</small>` : ""}`;
+       ${linkable ? `<small>→ ${esc(row.games.map((g) => g.title).join(" + "))}</small>` : ""}
+       ${["off", "none", "error", "weak"].includes(row.kind) ? `<button type="button" class="link" data-check-ignore="${row.i}">Ignore this file</button>` : ""}`;
   return `<label class="itch-row check-row ${row.kind === "have" || row.kind === "dupe" ? "done" : ""}" id="chk-${row.i}" title="${esc(row.item.location)}">
     <input type="checkbox" data-check="${row.i}" ${row.use ? "checked" : ""} ${linkable ? "" : "disabled"}>
     <span class="noimg"></span>
@@ -1626,7 +1631,8 @@ function renderDlc(r) {
   const assignRow = (f, sub, guess = dlcGuess(f.file)) => `<div class="dlc-row" data-path="${esc(f.path)}"><b>${esc(f.file)}</b>${sub ? `<small>${sub}</small>` : ""}
     <div class="dlc-assign"><div class="dlc-pick"><input data-dlc-game autocomplete="off" placeholder="Start typing a game's name…"
         value="${esc(guess?.title || "")}" data-game-id="${esc(guess?.id || "")}"><ul class="dlc-suggest" hidden></ul></div>
-      ${kindSelect(f)}<button type="button" data-dlc-assign>Assign</button></div></div>`;
+      ${kindSelect(f)}<button type="button" data-dlc-assign>Assign</button>
+      <button type="button" class="ghost" data-dlc-ignore title="Hide this file from future checks">Ignore</button></div></div>`;
   const handFiles = (m) => [...m.updates, ...m.dlc].filter((f) => f.manual);
   $("#itchBody").innerHTML = `
     <p class="muted">Matched ${fmt(r.files)} files by title ID against your ${fmt(r.games)} Switch games. ${updN} game${updN === 1 ? " has" : "s have"} an update and ${dlcN} DLC file${dlcN === 1 ? " is" : "s are"} matched.</p>
@@ -1644,7 +1650,9 @@ function renderDlc(r) {
     ${section("Files with no title ID", "These can't be matched automatically. Assign them to a game by hand.", r.untagged.map((f) => assignRow({ ...f, kind: "dlc" }, "")))}
     ${section("Owned games with no update or DLC files", "", r.lacking.map((t) => row(t, "")), false)}
     ${section("Games I couldn't read a title ID for", "The game's file name has no [title ID], so it can't be matched.", r.noId.map((t) => row(t, "")), false)}
-    ${r.files || r.errors.length ? "" : `<p class="muted">No Switch files found in your DLC / update folders.</p>`}`;
+    ${section("Ignored files", "Hidden from future checks. Restore one to see it again.",
+      (r.ignored || []).map((f) => row(f.file, "", `<button type="button" class="link" data-dlc-restore="${esc(f.path)}" data-file="${esc(f.file)}">Restore</button>`)), false)}
+    ${r.files || r.errors.length || (r.ignored || []).length ? "" : `<p class="muted">No Switch files found in your DLC / update folders.</p>`}`;
 }
 
 async function dlcChange(url, body) {
@@ -1681,8 +1689,41 @@ $("#itchDialog").addEventListener("focusout", (e) => {
   setTimeout(() => { const l = e.target.parentElement?.querySelector(".dlc-suggest"); if (l) l.hidden = true; }, 150);
 });
 
+// Ignore / restore in the scan list and in Check my library
+$("#itchDialog").addEventListener("click", async (e) => {
+  const scanBtn = e.target.closest("[data-ignore-scan]");
+  const checkBtn = e.target.closest("[data-check-ignore]");
+  if (!scanBtn && !checkBtn) return;
+  e.preventDefault();
+  try {
+    if (scanBtn) {
+      const it = itch.items.find((x) => x.id === scanBtn.dataset.ignoreScan);
+      await api("POST", "/api/ignore", { list: "scan", path: it.romPath, title: it.title, ignore: !it.ignored });
+      it.ignored = !it.ignored;
+      itch.selected.delete(it.id);
+      renderItchPick();
+    } else {
+      const row = check.rows[+checkBtn.dataset.checkIgnore];
+      await api("POST", "/api/ignore", { list: "scan", path: row.item.romPath, title: row.item.title });
+      row.use = false;
+      row.kind = "ignored";
+      $(`#chk-${row.i}`).remove();
+      checkFoot();
+    }
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
 $("#itchDialog").addEventListener("click", (e) => {
   if (itch.source !== "dlc") return;
+  const ign = e.target.closest("[data-dlc-ignore]");
+  if (ign) {
+    const rowEl = ign.closest(".dlc-row");
+    return dlcChange("/api/ignore", { list: "dlc", path: rowEl.dataset.path, title: $("b", rowEl).textContent });
+  }
+  const back = e.target.closest("[data-dlc-restore]");
+  if (back) return dlcChange("/api/ignore", { list: "dlc", path: back.dataset.dlcRestore, title: back.dataset.file, ignore: false });
   const pick = e.target.closest(".dlc-suggest li[data-id]");
   if (pick) {
     const input = pick.closest(".dlc-pick").querySelector("input");
