@@ -1590,29 +1590,77 @@ async function openDlc() {
   }
 }
 
+let dlcLast = null;
+
+function dlcGuess(file) {
+  const n = (t) => t.toLowerCase().replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9fff]+/g, "");
+  const f = n(file.replace(/\[[^\]]*\]/g, ""));
+  const hit = state.games.filter((g) => switchGame(g) && n(g.title).length > 3 && f.includes(n(g.title)))
+    .sort((a, b) => b.title.length - a.title.length)[0];
+  return hit ? hit.title : "";
+}
+
+const switchGame = (g) => g.platform === "switch" || g.emulator === "switch";
+
 function renderDlc(r) {
+  dlcLast = r;
   const ver = (f) => f.version != null ? `v${f.version}` : "version unknown";
   const dlcN = r.matched.reduce((n, m) => n + m.dlc.length, 0);
   const updN = r.matched.filter((m) => m.updates.length).length;
   const row = (title, sub, extra = "") => `<div class="dlc-row"><b>${esc(title)}</b>${sub ? `<small>${sub}</small>` : ""}${extra}</div>`;
   const section = (head, note, rows, open = true) => rows.length ? `<details class="dlc-sec" ${open ? "open" : ""}>
     <summary>${esc(head)} <span class="muted">(${rows.length})</span></summary>${note ? `<p class="muted">${note}</p>` : ""}${rows.join("")}</details>` : "";
+  const kindSelect = (f) => `<select data-dlc-kind aria-label="Update or DLC">
+    <option value="dlc" ${f.kind === "dlc" ? "selected" : ""}>DLC</option>
+    <option value="update" ${f.kind === "update" ? "selected" : ""}>Update</option></select>`;
+  const assignRow = (f, sub) => `<div class="dlc-row" data-path="${esc(f.path)}"><b>${esc(f.file)}</b>${sub ? `<small>${sub}</small>` : ""}
+    <div class="dlc-assign"><input list="dlcGames" data-dlc-game placeholder="Which game is this for?" value="${esc(dlcGuess(f.file))}">
+      ${kindSelect(f)}<button type="button" data-dlc-assign>Assign</button></div></div>`;
+  const handFiles = (m) => [...m.updates, ...m.dlc].filter((f) => f.manual);
   $("#itchBody").innerHTML = `
+    <datalist id="dlcGames">${state.games.filter(switchGame).map((g) => `<option value="${esc(g.title)}"></option>`).join("")}</datalist>
     <p class="muted">Matched ${fmt(r.files)} files by title ID against your ${fmt(r.games)} Switch games. ${updN} game${updN === 1 ? " has" : "s have"} an update and ${dlcN} DLC file${dlcN === 1 ? " is" : "s are"} matched.</p>
     ${r.errors.map((e) => `<p class="muted">⚠ ${esc(e)}</p>`).join("")}
     ${section("Games with updates or DLC", "", r.matched.map((m) => {
       const up = m.updates[0];
       const parts = [up ? `Update ${ver(up)}${m.updates.length > 1 ? ` (+${m.updates.length - 1} older)` : ""}` : "No update",
         m.dlc.length ? `${m.dlc.length} DLC` : "No DLC"];
-      return row(m.title, esc(parts.join(" · ")), m.dlc.length ? `<small class="dlc-list">${m.dlc.map((f) => esc(f.file)).join("<br>")}</small>` : "");
+      const list = [...m.dlc, ...m.updates.slice(1)].map((f) => `${esc(f.file)}${f.manual ? ` <button type="button" class="link" data-dlc-remove="${esc(f.path)}" data-game="${esc(m.id)}">assigned by you · remove</button>` : ""}`);
+      if (up?.manual) list.unshift(`${esc(up.file)} <button type="button" class="link" data-dlc-remove="${esc(up.path)}" data-game="${esc(m.id)}">assigned by you · remove</button>`);
+      return row(m.title, esc(parts.join(" · ")), list.length ? `<small class="dlc-list">${list.join("<br>")}</small>` : "");
     }))}
-    ${section("Files with no matching game", "These belong to a game that isn't in your library, or isn't linked to its file yet.",
-      r.orphans.map((f) => row(f.file, esc(`${f.kind === "base" ? "base game" : f.kind} · belongs to ${f.baseId}`))))}
+    ${section("Files with no matching game", "Pick the game each one belongs to and press Assign. Your choice is remembered.",
+      r.orphans.map((f) => assignRow(f, esc(`${f.kind === "base" ? "base game" : f.kind} · belongs to ${f.baseId}`))))}
+    ${section("Files with no title ID", "These can't be matched automatically. Assign them to a game by hand.", r.untagged.map((f) => assignRow({ ...f, kind: "dlc" }, "")))}
     ${section("Owned games with no update or DLC files", "", r.lacking.map((t) => row(t, "")), false)}
     ${section("Games I couldn't read a title ID for", "The game's file name has no [title ID], so it can't be matched.", r.noId.map((t) => row(t, "")), false)}
-    ${section("Files with no title ID", "Rename them to include the [16-character ID] so they can be matched.", r.untagged.map((t) => row(t, "")), false)}
-    ${r.files || r.untagged.length || r.errors.length ? "" : `<p class="muted">No Switch files found in your DLC / update folders.</p>`}`;
+    ${r.files || r.errors.length ? "" : `<p class="muted">No Switch files found in your DLC / update folders.</p>`}`;
 }
+
+async function dlcChange(url, body) {
+  try {
+    await api("POST", url, body);
+    const keep = new Set([...document.querySelectorAll("#itchBody details")].filter((d) => !d.open).map((d) => d.querySelector("summary").textContent.replace(/\s*\(\d+\)$/, "")));
+    state.games = await api("GET", "/api/games");
+    renderDlc(await api("GET", "/api/dlc/check"));
+    document.querySelectorAll("#itchBody details").forEach((d) => { if (keep.has(d.querySelector("summary").textContent.replace(/\s*\(\d+\)$/, ""))) d.open = false; });
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+$("#itchDialog").addEventListener("click", (e) => {
+  if (itch.source !== "dlc") return;
+  const rm = e.target.closest("[data-dlc-remove]");
+  if (rm) return dlcChange("/api/dlc/unassign", { gameId: rm.dataset.game, path: rm.dataset.dlcRemove, kind: "dlc" });
+  const btn = e.target.closest("[data-dlc-assign]");
+  if (!btn) return;
+  const rowEl = btn.closest(".dlc-row");
+  const title = $("[data-dlc-game]", rowEl).value.trim();
+  const game = state.games.find((g) => switchGame(g) && g.title === title);
+  if (!game) return toast("Pick a game from the list first", "error");
+  dlcChange("/api/dlc/assign", { gameId: game.id, path: rowEl.dataset.path, kind: $("[data-dlc-kind]", rowEl).value });
+});
 
 // ---------- global wiring ----------
 

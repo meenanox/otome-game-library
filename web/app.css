@@ -481,3 +481,8 @@ table.learn td:nth-child(2) { white-space: nowrap; }
 .dlc-row small { display: block; }
 .dlc-list { margin-top: 4px; font-size: 12px; }
 .dlc-label textarea { font-weight: 400; letter-spacing: normal; text-transform: none; }
+
+.dlc-assign { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.dlc-assign input { flex: 1 1 220px; }
+.dlc-assign select { width: auto; }
+button.link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font-size: 12px; }

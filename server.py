@@ -555,12 +555,14 @@ def switch_id_in(name):
 
 
 def check_dlc():
-    """Compare the files in the Switch DLC / update folders with the Switch games in the library."""
+    """Compare the files in the Switch DLC / update folders with the Switch games in the library.
+    Files the user assigned by hand (game["dlcFiles"]) go to that game whatever their name says."""
     settings = load_settings()
     folders = settings["emulators"].get("switch", {}).get("dlcFolders") or []
     if not folders:
         raise ValueError("Add your Switch DLC / update folders in Settings first.")
-    games = [g for g in load_games() if g.get("romPath") and
+    all_games = load_games()
+    games = [g for g in all_games if g.get("romPath") and
              (g.get("emulator") == "switch" or g.get("platform") == "switch")]
     owned, no_id = {}, []
     for g in games:
@@ -569,8 +571,10 @@ def check_dlc():
             owned.setdefault(switch_title_kind(tid)[1], []).append(g)
         else:
             no_id.append(g["title"])
+    manual = {rom_key(e["path"]): (g, e.get("kind", "dlc")) for g in all_games for e in g.get("dlcFiles") or []}
 
     files, errors, untagged = [], [], []
+    assigned = {}  # game id -> files placed by hand
     for folder in folders:
         root = Path(os.path.expandvars(folder.strip().strip('"')))
         if not root.is_dir():
@@ -582,35 +586,83 @@ def check_dlc():
             for name in filenames:
                 if Path(name).suffix.lower() not in SCAN_EXTS["switch"]:
                     continue
+                path = str(Path(dirpath) / name)
                 tid = switch_id_in(name)
+                v = SWITCH_VERSION.search(name)
+                version = int(v.group(1)) if v else None
+                hand = manual.get(rom_key(path))
+                if hand:
+                    assigned.setdefault(hand[0]["id"], []).append(
+                        {"file": name, "path": path, "titleId": tid, "kind": hand[1], "baseId": "",
+                         "version": version, "manual": True})
+                    continue
                 if not tid:
-                    untagged.append(name)
+                    untagged.append({"file": name, "path": path})
                     continue
                 kind, base = switch_title_kind(tid)
-                v = SWITCH_VERSION.search(name)
-                files.append({"file": name, "path": str(Path(dirpath) / name), "titleId": tid, "kind": kind,
-                              "baseId": base, "version": int(v.group(1)) if v else None})
+                files.append({"file": name, "path": path, "titleId": tid, "kind": kind,
+                              "baseId": base, "version": version})
 
     by_base = {}
     for f in files:
         by_base.setdefault(f["baseId"], []).append(f)
     newest_first = lambda f: (-(f["version"] if f["version"] is not None else -1), f["file"])
-    matched, orphans = [], []
+    found, orphans = {}, []
+
+    def entry(g, base=""):
+        return found.setdefault(g["id"], {"id": g["id"], "title": g["title"], "titleId": base, "files": []})
+
     for base, fs in by_base.items():
         if base in owned:
             for g in owned[base]:
-                matched.append({"id": g["id"], "title": g["title"], "titleId": base,
-                                "updates": sorted((f for f in fs if f["kind"] == "update"), key=newest_first),
-                                "dlc": sorted((f for f in fs if f["kind"] == "dlc"), key=lambda f: f["titleId"]),
-                                "base": [f for f in fs if f["kind"] == "base"]})
+                entry(g, base)["files"].extend(fs)
         else:
             orphans.extend(fs)
-    lacking = [g["title"] for base, gs in owned.items() if base not in by_base for g in gs]
+    by_id = {g["id"]: g for g in all_games}
+    for gid, fs in assigned.items():
+        if gid in by_id:
+            entry(by_id[gid])["files"].extend(fs)
+    matched = []
+    for m in found.values():
+        fs = m.pop("files")
+        m["updates"] = sorted((f for f in fs if f["kind"] == "update"), key=newest_first)
+        m["dlc"] = sorted((f for f in fs if f["kind"] == "dlc"), key=lambda f: (f["titleId"], f["file"]))
+        m["base"] = [f for f in fs if f["kind"] == "base"]
+        matched.append(m)
+    lacking = [g["title"] for gs in owned.values() for g in gs if g["id"] not in found]
     matched.sort(key=lambda m: m["title"].casefold())
     orphans.sort(key=lambda f: (f["baseId"], f["titleId"]))
+    untagged.sort(key=lambda f: f["file"].casefold())
     return {"matched": matched, "orphans": orphans, "lacking": sorted(lacking, key=str.casefold),
-            "noId": sorted(no_id, key=str.casefold), "untagged": sorted(untagged), "errors": errors[:20],
-            "files": len(files), "games": len(games)}
+            "noId": sorted(no_id, key=str.casefold), "untagged": untagged, "errors": errors[:20],
+            "files": len(files) + len(untagged) + sum(len(v) for v in assigned.values()), "games": len(games)}
+
+
+def assign_dlc(game_id, path, kind, remove=False):
+    """Pin a DLC / update file to a game (or take it off again). Only files inside the DLC folders qualify."""
+    if kind not in ("update", "dlc"):
+        raise ValueError("Pick whether the file is an update or DLC")
+    folders = load_settings()["emulators"].get("switch", {}).get("dlcFolders") or []
+    target = Path(path)
+    inside = any(target.resolve().is_relative_to(Path(os.path.expandvars(f.strip().strip('"'))).resolve())
+                 for f in folders)
+    if not (inside and target.suffix.lower() in SCAN_EXTS["switch"]):
+        raise ValueError("That file isn't in your DLC / update folders")
+    with lock:
+        games = load_games()
+        game = next((g for g in games if g["id"] == game_id), None)
+        if not game:
+            raise ValueError("Game not found")
+        for g in games:
+            keep = [e for e in g.get("dlcFiles") or [] if rom_key(e["path"]) != rom_key(path)]
+            if keep:
+                g["dlcFiles"] = keep
+            else:
+                g.pop("dlcFiles", None)
+        if not remove:
+            game.setdefault("dlcFiles", []).append({"path": path, "kind": kind})
+        write_json(GAMES_FILE, games)
+    return {"ok": True}
 
 
 # ---------- itch.io ----------
@@ -1219,6 +1271,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(game, 201)
             if path == "/api/library/reset":
                 return self.send_json(reset_library(self.read_body().get("mode")))
+            if path in ("/api/dlc/assign", "/api/dlc/unassign"):
+                b = self.read_body()
+                return self.send_json(assign_dlc(b.get("gameId"), b.get("path") or "", b.get("kind") or "dlc",
+                                                 remove=path.endswith("unassign")))
             if path == "/api/vndb/sync-list":
                 return self.send_json(sync_vndb_list(load_settings()))
             if path == "/api/characters/start":
