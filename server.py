@@ -753,6 +753,36 @@ def sync_vndb_list(settings):
     return {"added": added, "updated": updated, "skipped": skipped, "listed": len(entries)}
 
 
+def reset_library(mode):
+    """Start over. "vndb" removes only what the VNDB list sync added (and that you haven't linked to a file);
+    "all" empties the library. Settings, keys and folder lists are kept. The games file is backed up first."""
+    if mode not in ("vndb", "all"):
+        raise ValueError("Unknown reset option")
+    if chars_job["running"]:
+        raise ValueError("Wait for the character download to finish, or stop it in Settings, first.")
+    with lock:
+        games = load_games()
+        if mode == "vndb":
+            gone = [g for g in games if g.get("source") == "vndb-list" and not (g.get("romPath") or g.get("exePath"))]
+        else:
+            gone = list(games)
+        ids = {g["id"] for g in gone}
+        backup = None
+        if gone:
+            backup = DATA / "backups" / f"games-{time.strftime('%Y%m%d-%H%M%S')}.json"
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            with open(backup, "w", encoding="utf-8") as f:
+                json.dump(games, f, ensure_ascii=False, indent=2)
+            write_json(GAMES_FILE, [g for g in games if g["id"] not in ids])
+        if mode == "all":
+            write_json(CHARACTERS_FILE, {})
+            write_json(STAFF_FILE, {})
+    for gid in ids:
+        for f in COVERS.glob(f"{gid}.*"):
+            f.unlink(missing_ok=True)
+    return {"removed": len(gone), "backup": backup.name if backup else ""}
+
+
 CHAR_FIELDS = ("id, name, original, image.url, image.sexual, sex, birthday, blood_type, height, "
                "vns.id, vns.role, vns.spoiler, traits.id, traits.name, traits.group_name, traits.spoiler")
 CHAR_BATCH = 8
@@ -1102,6 +1132,8 @@ class Handler(BaseHTTPRequestHandler):
                     games.append(game)
                     write_json(GAMES_FILE, games)
                 return self.send_json(game, 201)
+            if path == "/api/library/reset":
+                return self.send_json(reset_library(self.read_body().get("mode")))
             if path == "/api/vndb/sync-list":
                 return self.send_json(sync_vndb_list(load_settings()))
             if path == "/api/characters/start":

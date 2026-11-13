@@ -1019,6 +1019,7 @@ function openSettings() {
   $("#ankiNote").value = anki.noteType || "";
   $("#ankiDeck").value = anki.deck || "";
   $("#ankiTags").value = anki.tags || "";
+  $("#resetNote").textContent = "";
   $("#itchKey").value = "";
   $("#itchKeyClear").checked = false;
   $("#itchKeyState").textContent = state.settings.itchKeySet
@@ -1074,6 +1075,47 @@ $("#vndbSyncBtn").addEventListener("click", async () => {
     btn.textContent = "Sync my VNDB list";
   }
 });
+
+// Two clicks to confirm: the first button press arms it and spells out what will go
+function resetPlan(mode) {
+  const gone = mode === "all" ? state.games
+    : state.games.filter((g) => g.source === "vndb-list" && !g.romPath && !g.exePath);
+  const kept = state.games.length - gone.length;
+  return { n: gone.length, text: mode === "all"
+    ? `This deletes all ${gone.length} games, their covers and fetched characters. Settings are kept.`
+    : `This deletes ${gone.length} game${gone.length === 1 ? "" : "s"} added by the VNDB list sync. ${kept} other game${kept === 1 ? "" : "s"} (added by hand, from itch.io or folders, or linked to a file) stay.` };
+}
+
+for (const [id, mode, label] of [["#resetVndbBtn", "vndb", "Remove VNDB list imports…"], ["#resetAllBtn", "all", "Reset whole library…"]]) {
+  $(id).addEventListener("click", async (e) => {
+    const btn = e.currentTarget, note = $("#resetNote");
+    const plan = resetPlan(mode);
+    if (!plan.n) { note.textContent = "Nothing to remove."; return; }
+    if (btn.dataset.armed !== "1") {
+      document.querySelectorAll("#resetVndbBtn, #resetAllBtn").forEach((b) => { b.dataset.armed = ""; });
+      $("#resetVndbBtn").textContent = "Remove VNDB list imports…";
+      $("#resetAllBtn").textContent = "Reset whole library…";
+      btn.dataset.armed = "1";
+      btn.textContent = `Click again to delete ${plan.n}`;
+      note.textContent = plan.text;
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const r = await api("POST", "/api/library/reset", { mode });
+      state.games = await api("GET", "/api/games");
+      render();
+      refreshSummary();
+      note.textContent = `Removed ${r.removed} game${r.removed === 1 ? "" : "s"}.${r.backup ? ` Backup: data/backups/${r.backup}` : ""}`;
+    } catch (err) {
+      note.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+      btn.dataset.armed = "";
+      btn.textContent = label;
+    }
+  });
+}
 
 $("#charsStartBtn").addEventListener("click", async () => {
   try {

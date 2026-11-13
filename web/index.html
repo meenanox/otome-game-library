@@ -222,6 +222,15 @@
           It's kept only in <code>data/settings.json</code> on this PC.</small>
         <label class="inline" id="itchKeyClearWrap"><input type="checkbox" id="itchKeyClear"> Remove the saved key</label>
       </div>
+      <h3 class="settings-h">Start over</h3>
+      <div class="emu-row">
+        <small>Your settings, API keys and game folders are kept. A copy of the games file is saved in <code>data/backups</code> first.</small>
+        <div class="row">
+          <button type="button" id="resetVndbBtn" class="ghost">Remove VNDB list imports…</button>
+          <button type="button" id="resetAllBtn" class="danger">Reset whole library…</button>
+        </div>
+        <small id="resetNote"></small>
+      </div>
       <footer class="sheet-foot">
         <button type="button" data-close class="ghost">Cancel</button>
         <button type="submit" class="primary">Save settings</button>

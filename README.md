@@ -1,4 +1,6 @@
-# My Games Library (v0.1)
+#**Start over:** in Settings, **Remove VNDB list imports** deletes only the games the VNDB list sync added (games you added by hand, imported from itch.io or folders, or linked to a file stay). **Reset whole library** deletes every game, cover and fetched character. Both need a second click to confirm, keep your settings and keys, and save a copy of the games file in `data/backups` first.
+
+ My Games Library (v0.1)
 
 A local catalogue for owned otome / BL / josei-muke games.
 
