@@ -377,6 +377,18 @@ label.inline input { width: auto; }
 .stone.gold b { color: #5c4514; }
 .stone.gold small { color: #8a6a1f; }
 
+/* Tier list editor */
+#tierDialog { width: min(560px, 94vw); }
+#tierForm { display: flex; flex-direction: column; gap: 12px; padding: 4px 4px 0; }
+#tierForm label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+#tierForm label.inline { flex-direction: row; align-items: center; }
+.tier-edit { display: flex; flex-direction: column; gap: 6px; }
+.tier-edit-row { display: grid; grid-template-columns: 44px 1fr auto auto auto; gap: 6px; align-items: center; }
+.tier-edit-row input[type="color"] { padding: 2px; height: 36px; cursor: pointer; }
+.tier-edit-row button { padding: 4px 9px; border-radius: 8px; }
+.tier-lists { margin-bottom: 4px; }
+.tier-label { word-break: break-word; line-height: 1.15; }
+
 /* Tier lists and love interests */
 .tier-board { display: flex; flex-direction: column; gap: 4px; --sz: 84px; }
 .tier-row { display: grid; grid-template-columns: 84px 1fr; min-height: calc(var(--sz) * 1.5 + 16px); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }

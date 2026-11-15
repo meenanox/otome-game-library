@@ -1902,10 +1902,15 @@ VIEWS.timeline = {
 };
 
 VIEWS.hall = {
-  render(host) {
+  async render(host) {
+    await loadTierLists();
+    const topTier = new Set(); // games in the top tier of any game tier list
+    for (const l of tierStore.lists.filter((x) => x.kind === "game")) {
+      for (const [id, t] of Object.entries(l.placements)) if (t === l.tiers[0].id) topTier.add(id);
+    }
     const labels = (g) => g.vndbLabels || [];
     const shame = state.games.filter((g) => g.status === "dropped" || labels(g).includes("Dropped") || labels(g).includes("Stalled"));
-    const fame = state.games.filter((g) => g.rating >= 5 || g.vndbVote >= 90 || g.tier === "S")
+    const fame = state.games.filter((g) => g.rating >= 5 || g.vndbVote >= 90 || topTier.has(g.id))
       .sort((a, b) => (b.rating || 0) - (a.rating || 0));
     const stone = (g) => `
       <article class="stone" tabindex="0" data-game="${esc(g.id)}">
@@ -1918,11 +1923,11 @@ VIEWS.hall = {
       <article class="stone gold" tabindex="0" data-game="${esc(g.id)}">
         <div class="trail-cover">${coverHTML(g)}</div>
         <b>${esc(g.title)}</b>
-        <small>${g.rating ? "★".repeat(g.rating) : g.vndbVote ? `${g.vndbVote / 10}/10 on VNDB` : "tier S"}</small>
+        <small>${g.rating ? "★".repeat(g.rating) : g.vndbVote ? `${g.vndbVote / 10}/10 on VNDB` : "top tier"}</small>
       </article>`;
     host.innerHTML = `<h2 class="page-h">Hall of Shame &amp; Fame</h2>
       <h3 class="hall-h">🏆 Hall of Fame <small>${fame.length}</small></h3>
-      <p class="muted">Games you rated 5 stars, voted 9+ on VNDB, or put in S tier.</p>
+      <p class="muted">Games you rated 5 stars, voted 9+ on VNDB, or put in the top tier of a game tier list.</p>
       <div class="stones">${fame.map(gold).join("") || `<p class="empty">Nothing here yet.</p>`}</div>
       <h3 class="hall-h">🪦 Hall of Shame <small>${shame.length}</small></h3>
       <p class="muted">Dropped or paused games (set the status in a game, or on VNDB and re-sync).</p>
@@ -1936,9 +1941,16 @@ VIEWS.hall = {
 // A love interest is a route of a game. Its score (0-10) and tier live on the route, a game's tier on the game,
 // so they're saved with the game and need no separate store.
 
-const TIERS = ["S", "A", "B", "C", "D", "F"];
-const TIER_COLOURS = { S: "#c4578a", A: "#c99a3c", B: "#6f9a6f", C: "#8a93b3", D: "#9a8f87", F: "#6d6670" };
-const tierUI = { category: "", size: +(() => { try { return localStorage.getItem("tierSize"); } catch (e) { return 0; } })() || 84 };
+// Tier lists live in data/tierlists.json (names, tiers with name + colour, placements), so they can be renamed, recoloured
+// and added to freely. These are only the starting point for new lists.
+const DEFAULT_TIERS = [
+  { id: "S", name: "S", color: "#c4578a" }, { id: "A", name: "A", color: "#c99a3c" }, { id: "B", name: "B", color: "#6f9a6f" },
+  { id: "C", name: "C", color: "#8a93b3" }, { id: "D", name: "D", color: "#9a8f87" }, { id: "F", name: "F", color: "#6d6670" },
+];
+const tierUI = {
+  category: "", size: +(() => { try { return localStorage.getItem("tierSize"); } catch (e) { return 0; } })() || 84,
+  current: (() => { try { return JSON.parse(localStorage.getItem("tierCurrent")) || {}; } catch (e) { return {}; } })(),
+};
 const liUI = { q: "", category: "", sort: "score", unratedOnly: false };
 
 function allLIs() {
@@ -1962,13 +1974,15 @@ const nameKey = (s) => (s || "").normalize("NFKC").toLowerCase().replace(/[\s・
  * An entry missing its voice actor joins the one entry that has that name; romaji is the last resort.
  * Returns Map(identity -> [love interests]).
  */
+const liNameOf = (l) => nameKey(l.original) || nameKey(l.name);
+const liNameId = (l) => { const n = liNameOf(l); return !n ? `k:${l.key}` : n.length >= 4 ? `n:${n}` : `n:${n}|${nameKey(l.va)}`; };
+
 function groupCharacters(list) {
   const groups = new Map();
   const add = (id, l) => { if (!groups.has(id)) groups.set(id, []); groups.get(id).push(l); };
   // A full name (4+ characters) is specific enough to identify someone on its own, even if a sequel recast the voice;
   // a short one ("シン", "Kei") also needs the same voice actor, or two different people would merge.
-  const nameOf = (l) => nameKey(l.original) || nameKey(l.name);
-  const nameId = (l) => { const n = nameOf(l); return !n ? `k:${l.key}` : n.length >= 4 ? `n:${n}` : `n:${n}|${nameKey(l.va)}`; };
+  const nameOf = liNameOf, nameId = liNameId;
   const claimed = new Map(); // name identity -> the group that owns it (a VNDB id when there is one)
   const rest = [];
   for (const l of list) {
@@ -2004,14 +2018,69 @@ const portraitHTML = (img, fallback, cls = "") => img
   ? `<img class="${cls}" src="${esc(img)}" alt="" loading="lazy" data-letter="${esc((fallback || "?")[0])}">`
   : `<span class="face-txt ${cls}">${esc((fallback || "?")[0])}</span>`;
 
-/** Shared tier board. items: [{key, tier, img, label, sub}]. Drag a card onto a row, or click it for a menu. */
-function renderTierBoard(host, items, { setTier, open }) {
+// ---- tier list store ----
+
+const tierStore = { lists: null, loading: null, timer: null };
+
+/** Black or white text, whichever reads on this tier colour. */
+const inkFor = (hex) => {
+  const n = parseInt((hex || "#888888").slice(1), 16);
+  return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 > 150 ? "#2b2230" : "#fff";
+};
+
+/** Where a love interest card is stored: its group id plus every spelling-based id of its members, so a placement
+ *  made before the characters were fetched (name id) still finds the card afterwards (VNDB id). */
+const liPlacementKeys = (id, ls) => [...new Set([id, ...ls.map(liNameId)])];
+
+function seedTierLists() {
+  // First use: turn the S-F placements already saved on routes and games into the two default lists.
+  const li = { id: "li-default", kind: "li", name: "LI Tier List", tiers: DEFAULT_TIERS.map((t) => ({ ...t })), placements: {} };
+  for (const [id, ls] of groupCharacters(allLIs())) {
+    const tier = (ls.find((l) => l.tier) || {}).tier;
+    if (tier && DEFAULT_TIERS.some((t) => t.id === tier)) liPlacementKeys(id, ls).forEach((k) => { li.placements[k] = tier; });
+  }
+  const game = { id: "game-default", kind: "game", name: "Game Tier List", tiers: DEFAULT_TIERS.map((t) => ({ ...t })), placements: {} };
+  for (const g of state.games) if (g.tier && DEFAULT_TIERS.some((t) => t.id === g.tier)) game.placements[g.id] = g.tier;
+  return [li, game];
+}
+
+function loadTierLists() {
+  tierStore.loading ||= (async () => {
+    await loadPeople(); // seeding groups characters, which needs their VNDB ids
+    const doc = await api("GET", "/api/tierlists").catch(() => ({ lists: null }));
+    tierStore.lists = doc.lists;
+    if (!tierStore.lists) { tierStore.lists = seedTierLists(); await saveTierLists(); }
+  })();
+  return tierStore.loading;
+}
+
+function saveTierLists() {
+  clearTimeout(tierStore.timer);
+  return api("PUT", "/api/tierlists", { lists: tierStore.lists })
+    .catch((e) => toast(`Couldn't save tier lists: ${e.message}`, "error"));
+}
+const saveTierListsSoon = () => { clearTimeout(tierStore.timer); tierStore.timer = setTimeout(saveTierLists, 250); };
+
+const tierOf = (list, keys) => {
+  const hit = keys.map((k) => list.placements[k]).find((t) => t && list.tiers.some((x) => x.id === t));
+  return hit || "";
+};
+
+function placeItem(list, keys, tierId) {
+  for (const k of keys) { if (tierId) list.placements[k] = tierId; else delete list.placements[k]; }
+  saveTierListsSoon();
+}
+
+// ---- board ----
+
+/** Shared tier board. items: [{key, tier (a tier id or ""), img, label, sub}]. Drag a card onto a row, or click it for a menu. */
+function renderTierBoard(host, items, tiers, { setTier, open }) {
   const card = (it) => `<div class="tier-card" draggable="true" data-key="${esc(it.key)}" title="${esc(it.label)}${it.sub ? " — " + esc(it.sub) : ""}">
       ${portraitHTML(it.img, it.label)}</div>`;
-  const rows = [...TIERS, ""].map((t) => `
-    <div class="tier-row" data-tier="${t}">
-      <div class="tier-label" style="background:${t ? TIER_COLOURS[t] : "var(--surface-2)"};${t ? "" : "color:var(--muted)"}">${t || "Unranked"}</div>
-      <div class="tier-items">${items.filter((it) => it.tier === t).map(card).join("")}</div>
+  const rows = [...tiers, { id: "", name: "Unranked", color: "" }].map((t) => `
+    <div class="tier-row" data-tier="${esc(t.id)}">
+      <div class="tier-label" style="${t.color ? `background:${esc(t.color)};color:${inkFor(t.color)}` : "background:var(--surface-2);color:var(--muted)"};font-size:${t.name.length > 8 ? 12 : t.name.length > 3 ? 15 : t.id ? 26 : 13}px">${esc(t.name)}</div>
+      <div class="tier-items">${items.filter((it) => it.tier === t.id).map(card).join("")}</div>
     </div>`).join("");
   host.innerHTML = `<div class="tier-board" style="--sz:${tierUI.size}px">${rows}</div>`;
   const byKey = Object.fromEntries(items.map((it) => [it.key, it]));
@@ -2035,12 +2104,12 @@ function renderTierBoard(host, items, { setTier, open }) {
     const pop = document.createElement("div");
     pop.className = "tier-pop";
     pop.innerHTML = `<b>${esc(it.label)}</b>${it.sub ? `<small>${esc(it.sub)}</small>` : ""}
-      <div class="tier-pop-btns">${[...TIERS, ""].map((t) => `<button type="button" data-t="${t}" ${it.tier === t ? "aria-pressed=true" : ""}
-        style="${t ? `background:${TIER_COLOURS[t]};color:#fff` : ""}">${t || "—"}</button>`).join("")}</div>
+      <div class="tier-pop-btns">${[...tiers, { id: "", name: "—", color: "" }].map((t) => `<button type="button" data-t="${esc(t.id)}" ${it.tier === t.id ? "aria-pressed=true" : ""}
+        title="${esc(t.id ? t.name : "Unranked")}" style="${t.color ? `background:${esc(t.color)};color:${inkFor(t.color)}` : ""}">${esc(t.name.length > 10 ? t.name.slice(0, 9) + "…" : t.name)}</button>`).join("")}</div>
       <button type="button" class="ghost" data-open>Open game</button>`;
     document.body.append(pop);
     const rect = c.getBoundingClientRect();
-    pop.style.left = `${Math.min(rect.left, innerWidth - pop.offsetWidth - 8)}px`;
+    pop.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - pop.offsetWidth - 8))}px`;
     pop.style.top = `${Math.min(rect.bottom + 6, innerHeight - pop.offsetHeight - 8)}px`;
     const close = () => { pop.remove(); document.removeEventListener("pointerdown", away, true); };
     const away = (ev) => { if (!pop.contains(ev.target)) close(); };
@@ -2054,8 +2123,116 @@ function renderTierBoard(host, items, { setTier, open }) {
   };
 }
 
-function tierControls(host, onChange) {
+// ---- list editor: rename the list, rename / recolour / reorder / add / remove tiers, or make a new list ----
+
+function openTierEditor(kind, list, done) {
+  let dlg = $("#tierDialog");
+  if (!dlg) {
+    document.body.insertAdjacentHTML("beforeend", `<dialog id="tierDialog" class="sheet"></dialog>`);
+    dlg = $("#tierDialog");
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+  }
+  const current = tierStore.lists.find((l) => l.id === tierUI.current[kind]) || tierStore.lists.find((l) => l.kind === kind);
+  const draft = {
+    name: list ? list.name : kind === "li" ? "My LI tier list" : "My game tier list",
+    tiers: (list ? list.tiers : DEFAULT_TIERS).map((t) => ({ ...t })),
+    copy: false,
+  };
+  const draw = () => {
+    const sameKind = tierStore.lists.filter((l) => l.kind === kind).length;
+    dlg.innerHTML = `
+      <form method="dialog" id="tierForm">
+        <header class="sheet-head"><h2>${list ? "Edit tier list" : "New tier list"}</h2>
+          <button type="button" class="icon" data-close aria-label="Close">✕</button></header>
+        <label>Name <input id="tlName" value="${esc(draft.name)}" maxlength="60"></label>
+        <h3 class="settings-h">Tiers <small class="muted">top to bottom</small></h3>
+        <div class="tier-edit">${draft.tiers.map((t, i) => `
+          <div class="tier-edit-row" data-i="${i}">
+            <input type="color" data-color value="${esc(t.color)}" aria-label="Colour">
+            <input data-name value="${esc(t.name)}" maxlength="40" placeholder="Tier name" aria-label="Tier name">
+            <button type="button" class="ghost" data-up ${i ? "" : "disabled"} aria-label="Move up">▲</button>
+            <button type="button" class="ghost" data-down ${i < draft.tiers.length - 1 ? "" : "disabled"} aria-label="Move down">▼</button>
+            <button type="button" class="ghost danger" data-del ${draft.tiers.length > 1 ? "" : "disabled"} aria-label="Remove tier">✕</button>
+          </div>`).join("")}</div>
+        <div class="row"><button type="button" class="ghost" data-add>＋ Add tier</button>
+          <button type="button" class="ghost" data-reset title="Back to S, A, B, C, D, F">Reset to S–F</button></div>
+        ${list ? "" : `<label class="inline"><input type="checkbox" id="tlCopy" ${draft.copy ? "checked" : ""}> Start with the placements from “${esc(current ? current.name : "")}”</label>`}
+        <footer class="sheet-foot">
+          ${list && sameKind > 1 ? `<button type="button" class="ghost danger" data-delete-list style="margin-right:auto">Delete this list</button>` : ""}
+          <button type="button" class="ghost" data-close>Cancel</button>
+          <button type="submit" class="primary">${list ? "Save" : "Create list"}</button>
+        </footer>
+      </form>`;
+  };
+  const sync = () => { // keep what's typed, so adding/moving a tier doesn't lose it
+    draft.name = $("#tlName", dlg).value;
+    $$(".tier-edit-row", dlg).forEach((row) => {
+      const t = draft.tiers[+row.dataset.i];
+      t.color = $("[data-color]", row).value;
+      t.name = $("[data-name]", row).value;
+    });
+    const copy = $("#tlCopy", dlg); if (copy) draft.copy = copy.checked;
+  };
+  dlg.onclick = (e) => {
+    if (e.target === dlg) return dlg.close();
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.hasAttribute("data-close")) return dlg.close();
+    sync();
+    const row = b.closest(".tier-edit-row"), i = row ? +row.dataset.i : -1;
+    if (b.hasAttribute("data-up") && i > 0) [draft.tiers[i - 1], draft.tiers[i]] = [draft.tiers[i], draft.tiers[i - 1]];
+    else if (b.hasAttribute("data-down") && i < draft.tiers.length - 1) [draft.tiers[i + 1], draft.tiers[i]] = [draft.tiers[i], draft.tiers[i + 1]];
+    else if (b.hasAttribute("data-del")) draft.tiers.splice(i, 1);
+    else if (b.hasAttribute("data-add")) draft.tiers.push({ id: `t${Date.now().toString(36)}${draft.tiers.length}`, name: "New tier", color: "#8a93b3" });
+    else if (b.hasAttribute("data-reset")) draft.tiers = DEFAULT_TIERS.map((t) => ({ ...t }));
+    else if (b.hasAttribute("data-delete-list")) {
+      const placed = Object.keys(list.placements).length;
+      if (!confirm(`Delete “${list.name}”${placed ? ` and its ${placed} placements` : ""}? Your games and characters aren't touched.`)) return;
+      tierStore.lists = tierStore.lists.filter((l) => l.id !== list.id);
+      delete tierUI.current[kind];
+      saveTierLists();
+      dlg.close();
+      return done();
+    } else return;
+    draw();
+  };
+  dlg.onsubmit = async (e) => {
+    e.preventDefault();
+    sync();
+    const name = draft.name.trim();
+    if (!name) return toast("Give the list a name", "error");
+    const used = new Set();
+    const tiers = draft.tiers.map((t) => {
+      let id = t.id; while (used.has(id)) id += "x"; used.add(id);
+      return { id, name: t.name.trim() || "Tier", color: t.color };
+    });
+    const ids = new Set(tiers.map((t) => t.id));
+    const keep = (pl) => Object.fromEntries(Object.entries(pl).filter(([, v]) => ids.has(v))); // items of a removed tier go back to Unranked
+    if (list) {
+      Object.assign(list, { name, tiers, placements: keep(list.placements) });
+    } else {
+      const fresh = { id: `l_${Date.now().toString(36)}`, kind, name, tiers, placements: draft.copy && current ? keep({ ...current.placements }) : {} };
+      tierStore.lists.push(fresh);
+      tierUI.current[kind] = fresh.id;
+      try { localStorage.setItem("tierCurrent", JSON.stringify(tierUI.current)); } catch (err) {}
+    }
+    await saveTierLists();
+    dlg.close();
+    done();
+  };
+  draw();
+  dlg.showModal();
+}
+
+function tierControls(host, kind, lists, list, onChange) {
   host.insertAdjacentHTML("beforeend", `
+    <div class="filters page-filters tier-lists">
+      <div class="filter-group"><b>List</b>
+        ${lists.map((l) => `<button class="chip" data-tlist="${esc(l.id)}" aria-pressed="${l.id === list.id}">${esc(l.name)}</button>`).join("")}
+        <button class="chip" data-tnew title="Make a new tier list">＋ New</button>
+        <button class="chip" data-tedit title="Rename this list, rename or recolour its tiers, add or remove tiers">⚙ Edit tiers</button>
+      </div>
+    </div>
     <div class="filters page-filters">
       <div class="filter-group"><b>Category</b>
         <button class="chip" data-tcat="" aria-pressed="${!tierUI.category}">All</button>
@@ -2064,6 +2241,13 @@ function tierControls(host, onChange) {
       <label class="inline">size <input type="range" id="tierSize" min="48" max="140" step="4" value="${tierUI.size}"> <output>${tierUI.size}px</output></label>
       <small>Drag a card onto a tier, or click it for a menu.</small>
     </div>`);
+  host.querySelectorAll("[data-tlist]").forEach((b) => b.onclick = () => {
+    tierUI.current[kind] = b.dataset.tlist;
+    try { localStorage.setItem("tierCurrent", JSON.stringify(tierUI.current)); } catch (e) {}
+    onChange();
+  });
+  host.querySelector("[data-tnew]").onclick = () => openTierEditor(kind, null, onChange);
+  host.querySelector("[data-tedit]").onclick = () => openTierEditor(kind, list, onChange);
   host.querySelectorAll("[data-tcat]").forEach((b) => b.onclick = () => { tierUI.category = b.dataset.tcat; onChange(); });
   const size = host.querySelector("#tierSize");
   size.oninput = () => { tierUI.size = +size.value; size.nextElementSibling.textContent = `${size.value}px`;
@@ -2071,58 +2255,55 @@ function tierControls(host, onChange) {
     try { localStorage.setItem("tierSize", size.value); } catch (e) {} };
 }
 
-function tierPage(title, empty, build) {
+/** A tier list page. build(list) returns the items [{key, keys, tier, img, label, sub, open()}] for the chosen list. */
+function tierPage(kind, title, empty, build) {
   return {
     async render(host) {
+      const view = host.dataset.view;
       host.innerHTML = `<h2 class="page-h">${esc(title)}</h2>`;
-      await loadPeople();
-      if (currentView !== host.dataset.view) return;
-      const draw = () => {
-        host.querySelectorAll(".filters, #tierBoardHost, .empty").forEach((x) => x.remove());
-        tierControls(host, () => { VIEWS[host.dataset.view].render(host); });
-        const board = document.createElement("div");
-        board.id = "tierBoardHost";
-        host.append(board);
-        const items = build();
-        if (!items.length) { board.innerHTML = `<p class="empty">${esc(empty)}</p>`; return; }
-        renderTierBoard(board, items.items || items, items.handlers || {});
-      };
-      draw();
+      await Promise.all([loadPeople(), loadTierLists()]);
+      if (currentView !== view) return;
+      const redraw = () => VIEWS[view].render(host);
+      const lists = tierStore.lists.filter((l) => l.kind === kind);
+      if (!lists.length) { // every list of this kind was deleted somehow: start again from the defaults
+        tierStore.lists.push({ id: `l_${Date.now().toString(36)}`, kind, name: title, tiers: DEFAULT_TIERS.map((t) => ({ ...t })), placements: {} });
+        saveTierLists();
+        return redraw();
+      }
+      const list = lists.find((l) => l.id === tierUI.current[kind]) || lists[0];
+      tierControls(host, kind, lists, list, redraw);
+      const board = document.createElement("div");
+      board.id = "tierBoardHost";
+      host.append(board);
+      const items = build(list);
+      if (!items.length) { board.innerHTML = `<p class="empty">${esc(empty)}</p>`; return; }
+      const y = scrollY;
+      renderTierBoard(board, items, list.tiers, {
+        setTier: (it, tierId) => { placeItem(list, it.keys, tierId); redraw().then(() => scrollTo(0, y)); },
+        open: (it) => it.open(),
+      });
     },
   };
 }
 
-VIEWS.litiers = tierPage("LI Tier List", "No love interests yet. Sync your VNDB list and fetch characters in Settings, or add routes to a game.", () => {
+VIEWS.litiers = tierPage("li", "LI Tier List", "No love interests yet. Sync your VNDB list and fetch characters in Settings, or add routes to a game.", (list) => {
   // The same character often appears in several entries (sequels, ports, remakes, fandiscs, a bundle's games): show them once.
   const groups = groupCharacters(allLIs().filter((x) => !tierUI.category || x.g.category === tierUI.category));
-  const byKey = {};
-  const items = [...groups.entries()].map(([id, ls]) => {
-    byKey[id] = ls;
-    const lead = ls.find((l) => l.tier) || ls[0];
+  return [...groups.entries()].map(([id, ls]) => {
+    const keys = liPlacementKeys(id, ls);
+    const lead = ls[0];
     const games = [...new Set(ls.map((l) => l.g.title))];
-    return { key: id, tier: lead.tier, img: ls.find((l) => l.image)?.image || lead.g.cover, label: lead.name,
-             sub: games.length > 2 ? `${games[0]} + ${games.length - 1} more` : games.join(" · ") };
+    return { key: id, keys, tier: tierOf(list, keys), img: ls.find((l) => l.image)?.image || lead.g.cover, label: lead.name,
+             sub: games.length > 2 ? `${games[0]} + ${games.length - 1} more` : games.join(" · "),
+             open: () => { detailTab = "overview"; openDetail(lead.g.id); } };
   });
-  items.handlers = {
-    setTier: async (it, tier) => {
-      const ls = byKey[it.key];
-      ls.forEach((l) => { l.r.tier = tier; });
-      for (const g of new Set(ls.map((l) => l.g))) await saveGame(g).catch((e) => toast(e.message, "error"));
-    },
-    open: (it) => { detailTab = "overview"; openDetail(byKey[it.key][0].g.id); },
-  };
-  return items;
 });
 
-VIEWS.gametiers = tierPage("Game Tier List", "No games yet.", () => {
-  const list = state.games.filter((g) => (!tierUI.category || g.category === tierUI.category) && (inDiary(g) || g.tier));
-  const items = list.map((g) => ({ key: g.id, tier: g.tier || "", img: g.cover, label: g.title, sub: LABELS.status[g.status] || "" }));
-  const byKey = Object.fromEntries(list.map((g) => [g.id, g]));
-  items.handlers = {
-    setTier: (it, tier) => { const g = byKey[it.key]; g.tier = tier; return saveGame(g).catch((e) => toast(e.message, "error")); },
-    open: (it) => { detailTab = "overview"; openDetail(it.key); },
-  };
-  return items;
+VIEWS.gametiers = tierPage("game", "Game Tier List", "No games yet.", (list) => {
+  const placed = (g) => list.placements[g.id];
+  return state.games.filter((g) => (!tierUI.category || g.category === tierUI.category) && (inDiary(g) || placed(g)))
+    .map((g) => ({ key: g.id, keys: [g.id], tier: tierOf(list, [g.id]), img: g.cover, label: g.title, sub: LABELS.status[g.status] || "",
+                   open: () => { detailTab = "overview"; openDetail(g.id); } }));
 });
 
 function liCardHTML(l) {
@@ -2133,7 +2314,6 @@ function liCardHTML(l) {
       <small>${esc(l.g.title)}${l.va ? ` · CV ${esc(l.va)}` : ""}</small>
       <div class="li-edit">
         <label>score <input type="number" min="0" max="10" step="0.5" data-score="${esc(l.key)}" value="${l.score ?? ""}" placeholder="–"></label>
-        <label>tier <select data-litier="${esc(l.key)}"><option value="">–</option>${TIERS.map((t) => `<option ${l.tier === t ? "selected" : ""}>${t}</option>`).join("")}</select></label>
       </div>
     </div>
   </article>`;
@@ -2179,11 +2359,9 @@ VIEWS.lis = {
     const list = host.querySelector("#liList");
     list.onchange = (e) => {
       const t = e.target;
-      const key = t.dataset.score || t.dataset.litier;
-      const hit = key && route(key);
+      const hit = t.dataset.score && route(t.dataset.score);
       if (!hit) return;
-      if (t.dataset.score) hit.r.score = t.value === "" ? null : Math.min(10, Math.max(0, +t.value));
-      else hit.r.tier = t.value;
+      hit.r.score = t.value === "" ? null : Math.min(10, Math.max(0, +t.value));
       saveGame(hit.g).catch((err) => toast(err.message, "error"));
     };
     list.onclick = (e) => {

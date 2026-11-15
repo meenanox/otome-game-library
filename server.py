@@ -28,6 +28,7 @@ GAMES_FILE = DATA / "games.json"
 SETTINGS_FILE = DATA / "settings.json"
 CHARACTERS_FILE = DATA / "characters.json"  # VNDB character id -> record (fetched data only)
 STAFF_FILE = DATA / "staff.json"            # VNDB staff id -> voice actor record
+TIERLISTS_FILE = DATA / "tierlists.json"    # the user's tier lists: names, tiers (name + colour) and placements
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", 9999))  # 8765 is taken by AnkiConnect
@@ -1042,6 +1043,36 @@ def start_characters(scope):
     threading.Thread(target=run_characters, args=(scope,), daemon=True).start()
 
 
+def clean_tierlists(doc):
+    """Validate a tier-lists document from the page. Raises ValueError with something readable."""
+    lists = doc.get("lists") if isinstance(doc, dict) else None
+    if not isinstance(lists, list) or len(lists) > 60:
+        raise ValueError("Tier lists should be a list of at most 60.")
+    out, seen = [], set()
+    for l in lists:
+        if not isinstance(l, dict) or l.get("kind") not in ("li", "game") or not str(l.get("id") or ""):
+            raise ValueError("A tier list is missing its id or kind.")
+        lid = str(l["id"])[:40]
+        if lid in seen:
+            raise ValueError("Two tier lists share an id.")
+        seen.add(lid)
+        tiers, tids = [], set()
+        for t in (l.get("tiers") if isinstance(l.get("tiers"), list) else [])[:40]:
+            tid = re.sub(r"[^\w-]", "", str(t.get("id") or ""))[:30]
+            if not tid or tid in tids:
+                continue
+            tids.add(tid)
+            color = str(t.get("color") or "")
+            tiers.append({"id": tid, "name": str(t.get("name") or tid)[:40],
+                          "color": color if re.fullmatch(r"#[0-9a-fA-F]{6}", color) else "#8a93b3"})
+        if not tiers:
+            raise ValueError(f"'{l.get('name') or lid}' needs at least one tier.")
+        place = l.get("placements") if isinstance(l.get("placements"), dict) else {}
+        out.append({"id": lid, "kind": l["kind"], "name": str(l.get("name") or "Tier list")[:60], "tiers": tiers,
+                    "placements": {str(k)[:200]: v for k, v in place.items() if v in tids}})
+    return {"lists": out}
+
+
 def library_summary():
     games = load_games()
     return {
@@ -1267,6 +1298,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(read_json(CHARACTERS_FILE, {}))
             if path == "/api/staff":
                 return self.send_json(read_json(STAFF_FILE, {}))
+            if path == "/api/tierlists":
+                return self.send_json(read_json(TIERLISTS_FILE, {"lists": None}))  # None: never saved, the page seeds the defaults
             if path == "/api/dlc/check":
                 return self.send_json(check_dlc())
             if path == "/api/scan":
@@ -1339,6 +1372,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/tierlists":
+            try:
+                doc = clean_tierlists(self.read_body())
+                with lock:
+                    write_json(TIERLISTS_FILE, doc)
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
+            return self.send_json(doc)
         if path == "/api/settings":
             try:
                 with lock:
