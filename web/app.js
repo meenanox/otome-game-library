@@ -1611,6 +1611,53 @@ function allLIs() {
   return out;
 }
 
+/** Spelling-proof form of a name: width, spacing, middle dots and punctuation don't make two people different. */
+const nameKey = (s) => (s || "").normalize("NFKC").toLowerCase().replace(/[\s・·.,'’"\-_()（）[\]「」]+/g, "");
+
+/**
+ * Collapse love interests to one entry per character, however many games they're in.
+ * Same VNDB character id; otherwise the same Japanese name (spelling-proofed) with the same voice actor.
+ * An entry missing its voice actor joins the one entry that has that name; romaji is the last resort.
+ * Returns Map(identity -> [love interests]).
+ */
+function groupCharacters(list) {
+  const groups = new Map();
+  const add = (id, l) => { if (!groups.has(id)) groups.set(id, []); groups.get(id).push(l); };
+  // A full name (4+ characters) is specific enough to identify someone on its own, even if a sequel recast the voice;
+  // a short one ("シン", "Kei") also needs the same voice actor, or two different people would merge.
+  const nameOf = (l) => nameKey(l.original) || nameKey(l.name);
+  const nameId = (l) => { const n = nameOf(l); return !n ? `k:${l.key}` : n.length >= 4 ? `n:${n}` : `n:${n}|${nameKey(l.va)}`; };
+  const claimed = new Map(); // name identity -> the group that owns it (a VNDB id when there is one)
+  const rest = [];
+  for (const l of list) {
+    if (!l.r.charId) { rest.push(l); continue; }
+    const nid = nameId(l);
+    // VNDB sometimes has two character records for one person (one per game): same name and voice actor = same card
+    const owner = claimed.get(nid) || l.r.charId;
+    claimed.set(nid, owner);
+    add(owner, l);
+  }
+  const byName = new Map();
+  for (const l of rest) {
+    const id = nameId(l);
+    if (claimed.has(id)) { add(claimed.get(id), l); continue; }
+    add(id, l);
+    const n = nameOf(l);
+    if (!byName.has(n)) byName.set(n, new Set());
+    byName.get(n).add(id);
+  }
+  // a short name whose entry lacks a voice actor, with exactly one voiced version of that name: same character
+  for (const [n, ids] of byName) {
+    const bare = `n:${n}|`;
+    const voiced = [...ids].filter((id) => id !== bare);
+    if (ids.has(bare) && voiced.length === 1 && groups.has(bare)) {
+      groups.get(voiced[0]).push(...groups.get(bare));
+      groups.delete(bare);
+    }
+  }
+  return groups;
+}
+
 const portraitHTML = (img, fallback, cls = "") => img
   ? `<img class="${cls}" src="${esc(img)}" alt="" loading="lazy" data-letter="${esc((fallback || "?")[0])}">`
   : `<span class="face-txt ${cls}">${esc((fallback || "?")[0])}</span>`;
@@ -1704,15 +1751,8 @@ function tierPage(title, empty, build) {
 }
 
 VIEWS.litiers = tierPage("LI Tier List", "No love interests yet. Sync your VNDB list and fetch characters in Settings, or add routes to a game.", () => {
-  // The same character often appears in several entries (ports, remakes, fandiscs, a bundle's two games): show them once.
-  // Same VNDB character id, or failing that the same Japanese name voiced by the same actor.
-  const identity = (l) => l.r.charId || (l.original ? `n:${l.original}|${l.va || ""}` : `k:${l.key}`);
-  const groups = new Map();
-  for (const l of allLIs().filter((x) => !tierUI.category || x.g.category === tierUI.category)) {
-    const id = identity(l);
-    if (!groups.has(id)) groups.set(id, []);
-    groups.get(id).push(l);
-  }
+  // The same character often appears in several entries (sequels, ports, remakes, fandiscs, a bundle's games): show them once.
+  const groups = groupCharacters(allLIs().filter((x) => !tierUI.category || x.g.category === tierUI.category));
   const byKey = {};
   const items = [...groups.entries()].map(([id, ls]) => {
     byKey[id] = ls;
