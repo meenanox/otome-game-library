@@ -1009,6 +1009,8 @@ function openSettings() {
         <input data-k="args" placeholder="{rom}" value="${esc(e.args)}" title="Arguments">
       </div>
       <textarea data-k="folders" rows="2" placeholder="${esc(FOLDER_HINTS[k] || "Game folders to scan, one per line")}">${esc((e.folders || []).join("\n"))}</textarea>
+      ${k === "switch" ? `<label class="dlc-label">DLC / UPDATES
+        <textarea data-k="dlcFolders" rows="2" placeholder="Switch DLC and update folders (NSP / XCI), one per line">${esc((e.dlcFolders || []).join("\n"))}</textarea></label>` : ""}
     </div>`).join("");
   $("#readingSpeed").value = state.settings.readingSpeed || 14000;
   $("#jitenKey").value = "";
@@ -1019,6 +1021,7 @@ function openSettings() {
   $("#ankiNote").value = anki.noteType || "";
   $("#ankiDeck").value = anki.deck || "";
   $("#ankiTags").value = anki.tags || "";
+  $("#resetNote").textContent = "";
   $("#itchKey").value = "";
   $("#itchKeyClear").checked = false;
   $("#itchKeyState").textContent = state.settings.itchKeySet
@@ -1075,6 +1078,47 @@ $("#vndbSyncBtn").addEventListener("click", async () => {
   }
 });
 
+// Two clicks to confirm: the first button press arms it and spells out what will go
+function resetPlan(mode) {
+  const gone = mode === "all" ? state.games
+    : state.games.filter((g) => g.source === "vndb-list" && !g.romPath && !g.exePath);
+  const kept = state.games.length - gone.length;
+  return { n: gone.length, text: mode === "all"
+    ? `This deletes all ${gone.length} games, their covers and fetched characters. Settings are kept.`
+    : `This deletes ${gone.length} game${gone.length === 1 ? "" : "s"} added by the VNDB list sync. ${kept} other game${kept === 1 ? "" : "s"} (added by hand, from itch.io or folders, or linked to a file) stay.` };
+}
+
+for (const [id, mode, label] of [["#resetVndbBtn", "vndb", "Remove VNDB list imports…"], ["#resetAllBtn", "all", "Reset whole library…"]]) {
+  $(id).addEventListener("click", async (e) => {
+    const btn = e.currentTarget, note = $("#resetNote");
+    const plan = resetPlan(mode);
+    if (!plan.n) { note.textContent = "Nothing to remove."; return; }
+    if (btn.dataset.armed !== "1") {
+      document.querySelectorAll("#resetVndbBtn, #resetAllBtn").forEach((b) => { b.dataset.armed = ""; });
+      $("#resetVndbBtn").textContent = "Remove VNDB list imports…";
+      $("#resetAllBtn").textContent = "Reset whole library…";
+      btn.dataset.armed = "1";
+      btn.textContent = `Click again to delete ${plan.n}`;
+      note.textContent = plan.text;
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const r = await api("POST", "/api/library/reset", { mode });
+      state.games = await api("GET", "/api/games");
+      render();
+      refreshSummary();
+      note.textContent = `Removed ${r.removed} game${r.removed === 1 ? "" : "s"}.${r.backup ? ` Backup: data/backups/${r.backup}` : ""}`;
+    } catch (err) {
+      note.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+      btn.dataset.armed = "";
+      btn.textContent = label;
+    }
+  });
+}
+
 $("#charsStartBtn").addEventListener("click", async () => {
   try {
     await api("POST", "/api/characters/start", {});
@@ -1101,6 +1145,8 @@ $("#settingsForm").addEventListener("submit", async (e) => {
       folders: $('[data-k="folders"]', row).value.split("\n")
         .map((f) => f.trim().replace(/^"|"$/g, "")).filter(Boolean),
     };
+    const dlc = $('[data-k="dlcFolders"]', row);
+    if (dlc) emulators[k].dlcFolders = dlc.value.split("\n").map((f) => f.trim().replace(/^"|"$/g, "")).filter(Boolean);
   });
   try {
     state.settings = await api("PUT", "/api/settings", {
@@ -1124,12 +1170,12 @@ $("#settingsForm").addEventListener("submit", async (e) => {
 // ---------- itch.io import ----------
 
 const CONFIDENCE = { release: "matching release", serial: "exact serial", link: "exact store link", title: "same title", possible: "possible match", none: "no match", error: "lookup failed" };
-const itch = { source: "itch", items: [], errors: [], selected: new Set(), q: "", type: "game", showImported: false, rows: [], busy: false, run: 0 };
+const itch = { source: "itch", items: [], errors: [], selected: new Set(), q: "", type: "game", showImported: false, showIgnored: false, rows: [], busy: false, run: 0 };
 const thumb = (src) => src ? `<img src="${esc(src)}" alt="" loading="lazy">` : `<span class="noimg"></span>`;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function startImport(source, title, loading) {
-  Object.assign(itch, { source, items: [], errors: [], q: "", type: source === "itch" ? "game" : "all", showImported: false });
+  Object.assign(itch, { source, items: [], errors: [], q: "", type: source === "itch" ? "game" : "all", showImported: false, showIgnored: false });
   itch.selected.clear();
   itch.run++;
   $("#importTitle").textContent = title;
@@ -1185,6 +1231,7 @@ function itchVisible() {
   return itch.items.filter((it) =>
     (itch.type === "all" || it.classification === itch.type) &&
     (itch.showImported || !it.imported) &&
+    (itch.showIgnored || !it.ignored) &&
     (!needle || `${it.title} ${it.developer}`.toLowerCase().includes(needle)));
 }
 
@@ -1198,6 +1245,7 @@ function renderItchPick() {
         ${types.map((t) => `<option value="${esc(t)}" ${t === itch.type ? "selected" : ""}>${esc(t.replace("_", " "))}</option>`).join("")}
       </select>
       <label class="inline"><input type="checkbox" id="itchShowImported" ${itch.showImported ? "checked" : ""}> Show already imported</label>
+      ${itch.source === "scan" ? `<label class="inline"><input type="checkbox" id="itchShowIgnored" ${itch.showIgnored ? "checked" : ""}> Show ignored (${itch.items.filter((it) => it.ignored).length})</label>` : ""}
       <button type="button" class="ghost" id="itchAll">Tick all shown</button>
       <button type="button" class="ghost" id="itchNone">Clear</button>
     </div>
@@ -1210,7 +1258,8 @@ function renderItchPick() {
   $("#itchQ").oninput = (e) => { itch.q = e.target.value; renderItchList(); };
   $("#itchType").onchange = (e) => { itch.type = e.target.value; renderItchList(); };
   $("#itchShowImported").onchange = (e) => { itch.showImported = e.target.checked; renderItchList(); };
-  $("#itchAll").onclick = () => { itchVisible().filter((it) => !it.imported).forEach((it) => itch.selected.add(it.id)); renderItchList(); };
+  if ($("#itchShowIgnored")) $("#itchShowIgnored").onchange = (e) => { itch.showIgnored = e.target.checked; renderItchList(); };
+  $("#itchAll").onclick = () => { itchVisible().filter((it) => !it.imported && !it.ignored).forEach((it) => itch.selected.add(it.id)); renderItchList(); };
   $("#itchNone").onclick = () => { itch.selected.clear(); renderItchList(); };
   $("#itchList").onchange = (e) => {
     const id = e.target.dataset.itch;
@@ -1222,13 +1271,14 @@ function renderItchPick() {
 function renderItchList() {
   const list = itchVisible();
   $("#itchList").innerHTML = list.map((it) => `
-    <label class="itch-row ${it.imported ? "done" : ""}" title="${esc(it.location || it.url || "")}">
-      <input type="checkbox" data-itch="${esc(it.id)}" ${itch.selected.has(it.id) ? "checked" : ""} ${it.imported ? "disabled" : ""}>
+    <label class="itch-row ${it.imported || it.ignored ? "done" : ""} ${itch.source === "scan" ? "has-act" : ""}" title="${esc(it.location || it.url || "")}">
+      <input type="checkbox" data-itch="${esc(it.id)}" ${itch.selected.has(it.id) ? "checked" : ""} ${it.imported || it.ignored ? "disabled" : ""}>
       ${thumb(it.cover)}
       <span><b>${esc(it.title)}</b>
         <small>${esc([it.developer, it.classification.replace("_", " "),
           itch.source === "itch" ? (it.purchased ? "purchased" : "bundle / claim") : "…\\" + it.location.split(/[\\/]/).slice(-2).join("\\"),
-          it.imported ? "already in library" : ""].filter(Boolean).join(" · "))}</small></span>
+          it.imported ? "already in library" : "", it.ignored ? "ignored" : ""].filter(Boolean).join(" · "))}</small></span>
+      ${itch.source === "scan" && !it.imported ? `<button type="button" class="link" data-ignore-scan="${esc(it.id)}">${it.ignored ? "Restore" : "Ignore"}</button>` : ""}
     </label>`).join("") || `<p class="muted">Nothing matches.</p>`;
   renderItchPickFoot();
 }
@@ -1401,6 +1451,298 @@ async function importItchRows() {
   render();
   toast(`Imported ${added} game${added === 1 ? "" : "s"}${itch.source === "itch" ? " from itch.io" : ""}`);
 }
+
+// ---------- check my library: game folders vs. games imported from VNDB ----------
+
+const check = { rows: [], busy: false, run: 0 };
+
+const CHECK_NOTE = {
+  link: "Link to your list entry",
+  have: "Your list entry already has a file",
+  dupe: "Another file already matched this entry",
+  off: "Not on your VNDB list",
+  weak: "Unsure match",
+  none: "No VNDB match",
+  error: "Lookup failed",
+};
+
+async function openCheck() {
+  const hasFolders = Object.values(state.settings.emulators).some((e) => (e.folders || []).length);
+  startImport("check", "Check my library", hasFolders ? "Scanning folders…" : "");
+  if (!hasFolders) {
+    $("#itchBody").innerHTML = `<p>Add your game folders for each emulator in <b>Settings</b> first.</p>`;
+    $("#itchFoot").innerHTML = `<button class="primary" id="scanToSettings">Open Settings</button>`;
+    $("#scanToSettings").onclick = () => { $("#itchDialog").close(); openSettings(); };
+    return;
+  }
+  const run = check.run = itch.run;
+  try {
+    const res = await api("GET", "/api/scan");
+    const files = res.items.filter((it) => !it.imported && !it.ignored);
+    const entries = (vid) => state.games.filter((g) => g.vndbId === vid);
+    check.rows = files.map((item, i) => ({ i, item, match: null, kind: "", game: null, use: false }));
+    $("#itchBody").innerHTML = `
+      <p class="muted">Looks up each file in your folders on VNDB. A file that matches a game already on your VNDB list is linked to that entry, so it launches from the library without making a duplicate.</p>
+      ${res.errors.map((e) => `<p class="muted">⚠ ${esc(e)}</p>`).join("")}
+      <div id="checkSum" class="muted"></div>
+      <div class="itch-list" id="checkList">${check.rows.map(checkRowHTML).join("") || `<p class="muted">Every file in your folders is already in the library.</p>`}</div>`;
+    $("#checkList").onchange = (e) => {
+      if (e.target.dataset.check) check.rows[+e.target.dataset.check].use = e.target.checked;
+      checkFoot();
+    };
+    check.busy = true;
+    checkFoot();
+    const claimed = new Set();
+    for (const row of check.rows) {
+      try {
+        const it = row.item;
+        row.match = await api("GET", `/api/vndb/match?${new URLSearchParams({ title: it.title, url: "", serial: it.serial || "", platform: it.platform })}`);
+      } catch (e) {
+        row.match = { confidence: "error" };
+      }
+      if (run !== itch.run || !$("#itchDialog").open) return;
+      const m = row.match, vid = m.vn?.id;
+      // A bundle (base game + fandisc on one cartridge) covers every VN in the chosen release
+      const rel = m.release?.groups.find((g) => g.id === m.release.suggested);
+      const vids = rel && rel.vns.length > 1 ? rel.vns.map((v) => v.id) : vid ? [vid] : [];
+      const sure = ["serial", "link", "title", "release"].includes(m.confidence);
+      const listed = vids.flatMap(entries);
+      if (!vid) row.kind = m.confidence === "error" ? "error" : "none";
+      else if (!listed.length) row.kind = "off";
+      else if (listed.every((g) => g.romPath)) row.kind = "have";
+      else if (vids.some((v) => claimed.has(v))) row.kind = "dupe";
+      else row.kind = sure ? "link" : "weak";
+      row.games = listed.filter((g) => !g.romPath);
+      if (row.kind === "link" || row.kind === "weak") vids.forEach((v) => claimed.add(v));
+      row.use = row.kind === "link";
+      $(`#chk-${row.i}`).outerHTML = checkRowHTML(row);
+      checkFoot();
+      await wait(250); // stay well inside VNDB's rate limit
+    }
+    check.busy = false;
+    checkFoot();
+  } catch (e) {
+    $("#itchBody").innerHTML = `<p>${esc(e.message)}</p>`;
+  }
+}
+
+function checkRowHTML(row) {
+  const m = row.match, linkable = row.kind === "link" || row.kind === "weak";
+  const result = !m ? `<span class="muted">Looking up…</span>`
+    : `<span class="conf ${esc(m.confidence)}">${esc(CHECK_NOTE[row.kind])}</span>
+       ${m.vn ? `<small>${esc([m.vn.title, year(m.vn.released)].filter(Boolean).join(" · "))}</small>` : ""}
+       ${linkable ? `<small>→ ${esc(row.games.map((g) => g.title).join(" + "))}</small>` : ""}
+       ${["off", "none", "error", "weak"].includes(row.kind) ? `<button type="button" class="link" data-check-ignore="${row.i}">Ignore this file</button>` : ""}`;
+  return `<label class="itch-row check-row ${row.kind === "have" || row.kind === "dupe" ? "done" : ""}" id="chk-${row.i}" title="${esc(row.item.location)}">
+    <input type="checkbox" data-check="${row.i}" ${row.use ? "checked" : ""} ${linkable ? "" : "disabled"}>
+    <span class="noimg"></span>
+    <span><b>${esc(row.item.title)}</b><small>${esc([LABELS.platform[row.item.platform] || row.item.platform, row.item.serial].filter(Boolean).join(" · "))}</small></span>
+    <span class="check-result">${result}</span>
+  </label>`;
+}
+
+function checkFoot(progress) {
+  const done = check.rows.filter((r) => r.match).length, n = check.rows.filter((r) => r.use).length;
+  const count = (k) => check.rows.filter((r) => r.kind === k).length;
+  $("#checkSum") && ($("#checkSum").textContent = check.rows.length
+    ? `${count("link") + count("weak")} match your VNDB list · ${count("have") + count("dupe")} already linked · ${count("off")} not on your list · ${count("none") + count("error")} unmatched`
+    : "");
+  $("#itchFoot").innerHTML = `
+    <span class="foot-note">${esc(progress || (check.busy ? `Checking ${done}/${check.rows.length}…` : `${check.rows.length} file${check.rows.length === 1 ? "" : "s"} checked`))}</span>
+    <button type="button" class="ghost" data-close>Close</button>
+    <button type="button" class="primary" id="checkApply" ${n && !progress ? "" : "disabled"}>Link ${n}</button>`;
+  $("#checkApply").onclick = applyCheck;
+}
+
+async function applyCheck() {
+  const todo = check.rows.filter((r) => r.use);
+  let linked = 0;
+  for (const row of todo) {
+    checkFoot(`Linking ${linked + 1}/${todo.length}…`);
+    const it = row.item;
+    for (const g of row.games) {
+      try {
+        const cur = state.games.find((x) => x.id === g.id);
+        await saveGame({ ...cur, format: "emulated", platform: it.platform, emulator: it.emulator, romPath: it.romPath, serial: it.serial });
+        linked++;
+      } catch (e) {
+        toast(`${g.title}: ${e.message}`, "error");
+      }
+    }
+    row.use = false;
+    row.kind = "have";
+    $(`#chk-${row.i}`).outerHTML = checkRowHTML(row);
+  }
+  checkFoot();
+  toast(`Linked ${linked} game${linked === 1 ? "" : "s"} to your folders`);
+}
+
+// ---------- Switch DLC / updates ----------
+
+async function openDlc() {
+  startImport("dlc", "Switch DLC & updates", "Reading your DLC / update folders…");
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button>`;
+  if (!(state.settings.emulators.switch?.dlcFolders || []).length) {
+    $("#itchBody").innerHTML = `<p>Add your <b>DLC / UPDATES</b> folders under the Switch emulator in <b>Settings</b> first.</p>`;
+    $("#itchFoot").innerHTML = `<button class="primary" id="dlcToSettings">Open Settings</button>`;
+    $("#dlcToSettings").onclick = () => { $("#itchDialog").close(); openSettings(); };
+    return;
+  }
+  try {
+    renderDlc(await api("GET", "/api/dlc/check"));
+  } catch (e) {
+    $("#itchBody").innerHTML = `<p>${esc(e.message)}</p>`;
+  }
+}
+
+let dlcLast = null;
+
+const dlcNorm = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9fff]+/g, "");
+const switchGame = (g) => g.platform === "switch" || g.emulator === "switch";
+
+// Library games whose title or Japanese title contains what was typed. Switch games first.
+function dlcSuggest(q, limit = 8) {
+  const words = String(q || "").toLowerCase().split(/\s+/).map(dlcNorm).filter(Boolean);
+  if (!words.length) return [];
+  return state.games
+    .filter((g) => { const hay = dlcNorm(`${g.title} ${g.originalTitle || ""}`); return words.every((w) => hay.includes(w)); })
+    .sort((a, b) => switchGame(b) - switchGame(a) || a.title.localeCompare(b.title))
+    .slice(0, limit);
+}
+
+function dlcGuess(file) {
+  const f = dlcNorm(file.replace(/\[[^\]]*\]/g, ""));
+  const hit = state.games.filter((g) => [g.title, g.originalTitle].some((t) => dlcNorm(t).length > 3 && f.includes(dlcNorm(t))))
+    .sort((a, b) => switchGame(b) - switchGame(a) || b.title.length - a.title.length)[0];
+  return hit || null;
+}
+
+function renderDlc(r) {
+  dlcLast = r;
+  const ver = (f) => f.version != null ? `v${f.version}` : "version unknown";
+  const dlcN = r.matched.reduce((n, m) => n + m.dlc.length, 0);
+  const updN = r.matched.filter((m) => m.updates.length).length;
+  const row = (title, sub, extra = "") => `<div class="dlc-row"><b>${esc(title)}</b>${sub ? `<small>${sub}</small>` : ""}${extra}</div>`;
+  const section = (head, note, rows, open = true) => rows.length ? `<details class="dlc-sec" ${open ? "open" : ""}>
+    <summary>${esc(head)} <span class="muted">(${rows.length})</span></summary>${note ? `<p class="muted">${note}</p>` : ""}${rows.join("")}</details>` : "";
+  const kindSelect = (f) => `<select data-dlc-kind aria-label="Update or DLC">
+    <option value="dlc" ${f.kind === "dlc" ? "selected" : ""}>DLC</option>
+    <option value="update" ${f.kind === "update" ? "selected" : ""}>Update</option></select>`;
+  const assignRow = (f, sub, guess = dlcGuess(f.file)) => `<div class="dlc-row" data-path="${esc(f.path)}"><b>${esc(f.file)}</b>${sub ? `<small>${sub}</small>` : ""}
+    <div class="dlc-assign"><div class="dlc-pick"><input data-dlc-game autocomplete="off" placeholder="Start typing a game's name…"
+        value="${esc(guess?.title || "")}" data-game-id="${esc(guess?.id || "")}"><ul class="dlc-suggest" hidden></ul></div>
+      ${kindSelect(f)}<button type="button" data-dlc-assign>Assign</button>
+      <button type="button" class="ghost" data-dlc-ignore title="Hide this file from future checks">Ignore</button></div></div>`;
+  const handFiles = (m) => [...m.updates, ...m.dlc].filter((f) => f.manual);
+  $("#itchBody").innerHTML = `
+    <p class="muted">Matched ${fmt(r.files)} files by title ID against your ${fmt(r.games)} Switch games. ${updN} game${updN === 1 ? " has" : "s have"} an update and ${dlcN} DLC file${dlcN === 1 ? " is" : "s are"} matched.</p>
+    ${r.errors.map((e) => `<p class="muted">⚠ ${esc(e)}</p>`).join("")}
+    ${section("Games with updates or DLC", "", r.matched.map((m) => {
+      const up = m.updates[0];
+      const parts = [up ? `Update ${ver(up)}${m.updates.length > 1 ? ` (+${m.updates.length - 1} older)` : ""}` : "No update",
+        m.dlc.length ? `${m.dlc.length} DLC` : "No DLC"];
+      const list = [...m.dlc, ...m.updates.slice(1)].map((f) => `${esc(f.file)}${f.manual ? ` <button type="button" class="link" data-dlc-remove="${esc(f.path)}" data-game="${esc(m.id)}">assigned by you · remove</button>` : ""}`);
+      if (up?.manual) list.unshift(`${esc(up.file)} <button type="button" class="link" data-dlc-remove="${esc(up.path)}" data-game="${esc(m.id)}">assigned by you · remove</button>`);
+      return row(m.title, esc(parts.join(" · ")), list.length ? `<small class="dlc-list">${list.join("<br>")}</small>` : "");
+    }))}
+    ${section("Files with no matching game", "Pick the game each one belongs to and press Assign. Your choice is remembered.",
+      r.orphans.map((f) => assignRow(f, esc(`${f.kind === "base" ? "base game" : f.kind} · belongs to ${f.baseId}`))))}
+    ${section("Files with no title ID", "These can't be matched automatically. Assign them to a game by hand.", r.untagged.map((f) => assignRow({ ...f, kind: "dlc" }, "")))}
+    ${section("Owned games with no update or DLC files", "", r.lacking.map((t) => row(t, "")), false)}
+    ${section("Games I couldn't read a title ID for", "The game's file name has no [title ID], so it can't be matched.", r.noId.map((t) => row(t, "")), false)}
+    ${section("Ignored files", "Hidden from future checks. Restore one to see it again.",
+      (r.ignored || []).map((f) => row(f.file, "", `<button type="button" class="link" data-dlc-restore="${esc(f.path)}" data-file="${esc(f.file)}">Restore</button>`)), false)}
+    ${r.files || r.errors.length || (r.ignored || []).length ? "" : `<p class="muted">No Switch files found in your DLC / update folders.</p>`}`;
+}
+
+async function dlcChange(url, body) {
+  try {
+    await api("POST", url, body);
+    const keep = new Set([...document.querySelectorAll("#itchBody details")].filter((d) => !d.open).map((d) => d.querySelector("summary").textContent.replace(/\s*\(\d+\)$/, "")));
+    state.games = await api("GET", "/api/games");
+    renderDlc(await api("GET", "/api/dlc/check"));
+    document.querySelectorAll("#itchBody details").forEach((d) => { if (keep.has(d.querySelector("summary").textContent.replace(/\s*\(\d+\)$/, ""))) d.open = false; });
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+function showDlcSuggest(input) {
+  const list = input.parentElement.querySelector(".dlc-suggest");
+  const hits = dlcSuggest(input.value);
+  list.innerHTML = hits.map((g) => `<li data-id="${esc(g.id)}" data-title="${esc(g.title)}"><b>${esc(g.title)}</b>
+    <small>${esc([g.originalTitle, LABELS.platform[g.platform] || g.platform].filter((x) => x && x !== g.title).join(" · "))}</small></li>`).join("")
+    || `<li class="none">No game in your library matches</li>`;
+  list.hidden = !input.value.trim();
+}
+
+$("#itchDialog").addEventListener("input", (e) => {
+  if (itch.source !== "dlc" || !e.target.matches("[data-dlc-game]")) return;
+  e.target.dataset.gameId = ""; // typing again clears the earlier pick
+  showDlcSuggest(e.target);
+});
+$("#itchDialog").addEventListener("focusin", (e) => {
+  if (itch.source === "dlc" && e.target.matches("[data-dlc-game]") && e.target.value.trim() && !e.target.dataset.gameId) showDlcSuggest(e.target);
+});
+$("#itchDialog").addEventListener("focusout", (e) => {
+  if (itch.source !== "dlc" || !e.target.matches("[data-dlc-game]")) return;
+  setTimeout(() => { const l = e.target.parentElement?.querySelector(".dlc-suggest"); if (l) l.hidden = true; }, 150);
+});
+
+// Ignore / restore in the scan list and in Check my library
+$("#itchDialog").addEventListener("click", async (e) => {
+  const scanBtn = e.target.closest("[data-ignore-scan]");
+  const checkBtn = e.target.closest("[data-check-ignore]");
+  if (!scanBtn && !checkBtn) return;
+  e.preventDefault();
+  try {
+    if (scanBtn) {
+      const it = itch.items.find((x) => x.id === scanBtn.dataset.ignoreScan);
+      await api("POST", "/api/ignore", { list: "scan", path: it.romPath, title: it.title, ignore: !it.ignored });
+      it.ignored = !it.ignored;
+      itch.selected.delete(it.id);
+      renderItchPick();
+    } else {
+      const row = check.rows[+checkBtn.dataset.checkIgnore];
+      await api("POST", "/api/ignore", { list: "scan", path: row.item.romPath, title: row.item.title });
+      row.use = false;
+      row.kind = "ignored";
+      $(`#chk-${row.i}`).remove();
+      checkFoot();
+    }
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
+$("#itchDialog").addEventListener("click", (e) => {
+  if (itch.source !== "dlc") return;
+  const ign = e.target.closest("[data-dlc-ignore]");
+  if (ign) {
+    const rowEl = ign.closest(".dlc-row");
+    return dlcChange("/api/ignore", { list: "dlc", path: rowEl.dataset.path, title: $("b", rowEl).textContent });
+  }
+  const back = e.target.closest("[data-dlc-restore]");
+  if (back) return dlcChange("/api/ignore", { list: "dlc", path: back.dataset.dlcRestore, title: back.dataset.file, ignore: false });
+  const pick = e.target.closest(".dlc-suggest li[data-id]");
+  if (pick) {
+    const input = pick.closest(".dlc-pick").querySelector("input");
+    input.value = pick.dataset.title;
+    input.dataset.gameId = pick.dataset.id;
+    pick.closest(".dlc-suggest").hidden = true;
+    return;
+  }
+  const rm = e.target.closest("[data-dlc-remove]");
+  if (rm) return dlcChange("/api/dlc/unassign", { gameId: rm.dataset.game, path: rm.dataset.dlcRemove, kind: "dlc" });
+  const btn = e.target.closest("[data-dlc-assign]");
+  if (!btn) return;
+  const rowEl = btn.closest(".dlc-row");
+  const input = $("[data-dlc-game]", rowEl), title = input.value.trim();
+  const game = state.games.find((g) => g.id === input.dataset.gameId) ||
+    state.games.find((g) => g.title === title || g.originalTitle === title);
+  if (!game) return toast("Pick a game from the suggestions first", "error");
+  dlcChange("/api/dlc/assign", { gameId: game.id, path: rowEl.dataset.path, kind: $("[data-dlc-kind]", rowEl).value });
+});
 
 // ---------- global wiring ----------
 
@@ -1890,6 +2232,8 @@ $("#addBtn").onclick = () => openEdit(null);
 $("#settingsBtn").onclick = openSettings;
 $("#itchBtn").onclick = openItch;
 $("#scanBtn").onclick = openScan;
+$("#checkBtn").onclick = openCheck;
+$("#dlcBtn").onclick = openDlc;
 $("#search").addEventListener("input", (e) => { state.filter.q = e.target.value; render(); });
 $("#sort").onchange = (e) => { state.sort = e.target.value; render(); };
 

@@ -1,4 +1,10 @@
-# My Games Library (v0.1)
+#**Switch DLC & updates:** under the Switch emulator in Settings, add your **DLC / UPDATES** folders. **Check DLC & updates** reads the 16-character title ID in each file name (`[0100XXXXXXXXXXXX]`), works out which game it belongs to (update IDs end in `800`; DLC IDs sit just above the base game) and compares that with the Switch games in your library. It shows each game's newest update (by the `[vNNN]` version in the name) and its DLC, plus files with no matching game, owned games with no update or DLC files, and files whose names have no title ID. Files it can't place (no matching game, or no title ID in the name) can be assigned to a game by hand in the same dialog; that choice is saved on the game and can be removed again. Apart from that it only reads file names.
+
+**Ignoring files:** many files in your folders aren't visual novels, and many DLC files belong to other games. Click **Ignore** on a row in **Scan folders**, **Check my library** or the **DLC & updates** report to hide it from future scans. Tick **Show ignored** in Scan folders, or open **Ignored files** in the DLC report, to restore it. The list is kept in `data/ignored.json`.
+
+**Start over:** in Settings, **Remove VNDB list imports** deletes only the games the VNDB list sync added (games you added by hand, imported from itch.io or folders, or linked to a file stay). **Reset whole library** deletes every game, cover and fetched character. Both need a second click to confirm, keep your settings and keys, and save a copy of the games file in `data/backups` first.
+
+ My Games Library (v0.1)
 
 A local catalogue for owned otome / BL / josei-muke games.
 
@@ -21,6 +27,11 @@ pick categories, import. The key stays in `data/settings.json` and is never sent
 **Scan folders**. Finds PSP ISO/CSO/CHD/EBOOT.PBP, Switch NSP/XCI, and Vita3K installed apps
 (`ux0\app\<TITLE_ID>`). PSP ISOs, EBOOTs and Vita apps carry their real title and serial, and VNDB
 matches serials exactly. Vita games launch by title ID (`-r {rom}`).
+
+**Check my library:** looks up every file in your game folders that isn't in the library yet on VNDB.
+When a file matches a game already on your VNDB list (imported with the list sync), ticking it links the file
+to that entry instead of creating a duplicate. Bundles link every game they contain. Rows that aren't on your
+list or didn't match are only reported; use **Scan folders** to import those.
 
 **Japanese study (Jiten):** each game has a **Study** tab, and the **Study** button in the top bar opens a library-wide
 view. Games match on [jiten.moe](https://jiten.moe) by VNDB id (exact), then exact title; anything fuzzy is offered as
