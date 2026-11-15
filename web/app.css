@@ -346,6 +346,37 @@ label.inline input { width: auto; }
 .flavours input { flex: 1; padding: 0; }
 @media (max-width: 720px) { .log-grid, .flavours { grid-template-columns: 1fr; } .diary-row { grid-template-columns: 48px 1fr; } .diary-side { grid-column: 1 / -1; flex-direction: row; } }
 
+/* Timeline and Hall of Shame & Fame */
+.trail { position: relative; padding-left: 28px; border-left: 3px solid var(--accent-soft); margin-left: 8px; }
+.trail-year h3 { font-size: 26px; margin: 18px 0 8px; color: var(--accent); }
+.trail-year h3 small { font: 13px "Segoe UI", sans-serif; color: var(--muted); }
+.trail-item { position: relative; display: flex; align-items: center; gap: 14px; padding: 8px 12px; margin: 6px 0; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; max-width: 520px; }
+.trail-item:hover, .trail-item:focus-visible { border-color: var(--accent); outline: none; }
+.trail-item small { display: block; color: var(--muted); }
+.trail-item .dot { position: absolute; left: -39px; top: 50%; width: 14px; height: 14px; margin-top: -7px; border-radius: 50%;
+  background: var(--st-none); border: 3px solid var(--bg); }
+.trail-item .dot.completed { background: var(--st-good); }
+.trail-item .dot.playing { background: var(--st-progress); }
+.trail-item .dot.dropped { background: var(--st-bad); }
+.trail-cover { width: 56px; aspect-ratio: 2 / 3; border-radius: 6px; overflow: hidden; flex: none; }
+.trail-cover .cover { width: 100%; height: 100%; object-fit: cover; display: block; }
+.trail-cover .placeholder { height: 100%; display: grid; place-items: center; }
+.hall-h { font-size: 28px; margin: 22px 0 2px; }
+.hall-h small { font: 13px "Segoe UI", sans-serif; color: var(--muted); }
+.stones { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.stone { width: 132px; display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; padding: 14px 8px 10px; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 60px 60px 10px 10px; }
+.stone:hover, .stone:focus-visible { border-color: var(--accent); outline: none; }
+.stone .trail-cover { width: 80px; filter: grayscale(.85); }
+.stone b { font-size: 13px; line-height: 1.25; }
+.stone small { color: var(--muted); }
+.stone .epitaph { font-style: italic; font-size: 11px; }
+.stone.gold { background: linear-gradient(#f9ecc4, var(--surface)); border-color: #d9b065; }
+.stone.gold .trail-cover { filter: none; }
+.stone.gold b { color: #5c4514; }
+.stone.gold small { color: #8a6a1f; }
+
 /* Tier lists and love interests */
 .tier-board { display: flex; flex-direction: column; gap: 4px; --sz: 84px; }
 .tier-row { display: grid; grid-template-columns: 84px 1fr; min-height: calc(var(--sz) * 1.5 + 16px); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }

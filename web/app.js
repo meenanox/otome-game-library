@@ -1526,6 +1526,70 @@ function renderVAs(host) {
   host.querySelectorAll("[data-vacat]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.vacat === vaUI.category)));
 }
 
+// ---------- pages: Timeline, Hall of Shame & Fame ----------
+
+const openGameFrom = (el) => { const b = el.closest("[data-game]"); if (b) { detailTab = "overview"; openDetail(b.dataset.game); } };
+const dateRange = (g) => `${g.startedOn || "?"} → ${g.finishedOn || "…"}`;
+
+VIEWS.timeline = {
+  render(host) {
+    const dated = state.games.filter((g) => inDiary(g) && (g.startedOn || g.finishedOn))
+      .sort((a, b) => (a.startedOn || a.finishedOn).localeCompare(b.startedOn || b.finishedOn));
+    const undated = state.games.filter((g) => inDiary(g) && !g.startedOn && !g.finishedOn).length;
+    const byYear = new Map();
+    for (const g of dated) {
+      const y = (g.startedOn || g.finishedOn).slice(0, 4);
+      if (!byYear.has(y)) byYear.set(y, []);
+      byYear.get(y).push(g);
+    }
+    host.innerHTML = `<h2 class="page-h">Timeline</h2>
+      ${dated.length ? `<div class="trail">${[...byYear].map(([y, gs]) => `
+        <section class="trail-year"><h3>${esc(y)} <small>${gs.length} game${gs.length === 1 ? "" : "s"}</small></h3>
+          ${gs.map((g, i) => `
+          <article class="trail-item ${i % 2 ? "alt" : ""}" tabindex="0" data-game="${esc(g.id)}" title="${esc(dateRange(g))}">
+            <i class="dot ${esc(g.status)}"></i>
+            <div class="trail-cover">${coverHTML(g)}</div>
+            <div><b>${esc(g.title)}</b><small>${esc(dateRange(g))}</small>
+              <small>${g.rating ? "★".repeat(g.rating) : LABELS.status[g.status] || ""}</small></div>
+          </article>`).join("")}
+        </section>`).join("")}</div>` : `<p class="empty">No dated games yet. Add start and finish dates in a game's Log tab.</p>`}
+      ${undated ? `<p class="muted">${undated} diary game${undated === 1 ? " has" : "s have"} no dates yet, so ${undated === 1 ? "it isn't" : "they aren't"} on the trail.</p>` : ""}`;
+    host.onclick = (e) => openGameFrom(e.target);
+    host.onkeydown = (e) => { if (e.key === "Enter") openGameFrom(e.target); };
+  },
+};
+
+VIEWS.hall = {
+  render(host) {
+    const labels = (g) => g.vndbLabels || [];
+    const shame = state.games.filter((g) => g.status === "dropped" || labels(g).includes("Dropped") || labels(g).includes("Stalled"));
+    const fame = state.games.filter((g) => g.rating >= 5 || g.vndbVote >= 90 || g.tier === "S")
+      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    const stone = (g) => `
+      <article class="stone" tabindex="0" data-game="${esc(g.id)}">
+        <div class="trail-cover">${coverHTML(g)}</div>
+        <b>${esc(g.title)}</b>
+        <small>${labels(g).includes("Stalled") && g.status !== "dropped" ? "paused" : "dropped"}${g.finishedOn || g.startedOn ? ` · ${esc(g.finishedOn || g.startedOn)}` : ""}</small>
+        ${g.bad ? `<small class="epitaph">${esc(g.bad.length > 90 ? g.bad.slice(0, 90) + "…" : g.bad)}</small>` : ""}
+      </article>`;
+    const gold = (g) => `
+      <article class="stone gold" tabindex="0" data-game="${esc(g.id)}">
+        <div class="trail-cover">${coverHTML(g)}</div>
+        <b>${esc(g.title)}</b>
+        <small>${g.rating ? "★".repeat(g.rating) : g.vndbVote ? `${g.vndbVote / 10}/10 on VNDB` : "tier S"}</small>
+      </article>`;
+    host.innerHTML = `<h2 class="page-h">Hall of Shame &amp; Fame</h2>
+      <h3 class="hall-h">🏆 Hall of Fame <small>${fame.length}</small></h3>
+      <p class="muted">Games you rated 5 stars, voted 9+ on VNDB, or put in S tier.</p>
+      <div class="stones">${fame.map(gold).join("") || `<p class="empty">Nothing here yet.</p>`}</div>
+      <h3 class="hall-h">🪦 Hall of Shame <small>${shame.length}</small></h3>
+      <p class="muted">Dropped or paused games (set the status in a game, or on VNDB and re-sync).</p>
+      <div class="stones">${shame.map(stone).join("") || `<p class="empty">Nothing dropped. Impressive.</p>`}</div>`;
+    host.onclick = (e) => openGameFrom(e.target);
+    host.onkeydown = (e) => { if (e.key === "Enter") openGameFrom(e.target); };
+  },
+};
+
 // ---------- love interests: scores + tier lists ----------
 // A love interest is a route of a game. Its score (0-10) and tier live on the route, a game's tier on the game,
 // so they're saved with the game and need no separate store.
