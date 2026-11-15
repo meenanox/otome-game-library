@@ -2231,6 +2231,7 @@ function tierControls(host, kind, lists, list, onChange) {
         ${lists.map((l) => `<button class="chip" data-tlist="${esc(l.id)}" aria-pressed="${l.id === list.id}">${esc(l.name)}</button>`).join("")}
         <button class="chip" data-tnew title="Make a new tier list">＋ New</button>
         <button class="chip" data-tedit title="Rename this list, rename or recolour its tiers, add or remove tiers">⚙ Edit tiers</button>
+        <button class="chip" data-texport title="Save this tier list as a picture">🖼 Export image</button>
       </div>
     </div>
     <div class="filters page-filters">
@@ -2276,6 +2277,7 @@ function tierPage(kind, title, empty, build) {
       board.id = "tierBoardHost";
       host.append(board);
       const items = build(list);
+      host.querySelector("[data-texport]").onclick = () => items.length ? openTierExport(list, items) : toast("Nothing to export yet", "error");
       if (!items.length) { board.innerHTML = `<p class="empty">${esc(empty)}</p>`; return; }
       const y = scrollY;
       renderTierBoard(board, items, list.tiers, {

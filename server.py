@@ -3,6 +3,7 @@
 Serves the catalogue page, stores data in data/games.json, launches games,
 and proxies VNDB lookups. Standard library only; listens on localhost only.
 """
+import hashlib
 import json
 import mimetypes
 import os
@@ -24,6 +25,7 @@ ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 DATA = ROOT / "data"
 COVERS = DATA / "covers"
+IMG_CACHE = DATA / "img-cache"  # remote images (character portraits) fetched once, served from here
 GAMES_FILE = DATA / "games.json"
 SETTINGS_FILE = DATA / "settings.json"
 CHARACTERS_FILE = DATA / "characters.json"  # VNDB character id -> record (fetched data only)
@@ -172,6 +174,32 @@ def localise_cover(game):
         game["cover"] = f"/covers/{dest.name}?v={int(time.time())}"
     except (urllib.error.URLError, OSError) as e:
         print(f"Cover download failed for {game.get('title')}: {e}", file=sys.stderr)
+
+
+MAX_IMG_BYTES = 8 << 20
+
+
+def cached_image(url):
+    """Fetch a VNDB / itch.io image once and keep it in data/img-cache. Serving it from our own address lets the page
+    draw it onto a canvas (needed for exporting a tier list as a picture) and makes portraits work offline."""
+    p = urllib.parse.urlparse(url)
+    host = p.hostname or ""
+    if p.scheme != "https" or not any(host == h or host.endswith("." + h) for h in COVER_HOSTS):
+        raise ValueError("That image isn't from a host the library fetches from.")
+    ext = os.path.splitext(p.path)[1].lower()
+    ext = ext if ext in (".jpg", ".jpeg", ".png", ".webp", ".gif") else ".jpg"
+    dest = IMG_CACHE / (hashlib.sha1(url.encode()).hexdigest() + ext)
+    if not dest.exists():
+        IMG_CACHE.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = r.read(MAX_IMG_BYTES + 1)
+        if len(data) > MAX_IMG_BYTES:
+            raise ValueError("That image is too large.")
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        tmp.write_bytes(data)
+        os.replace(tmp, dest)
+    return dest
 
 
 def new_id(title):
@@ -1298,6 +1326,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(read_json(CHARACTERS_FILE, {}))
             if path == "/api/staff":
                 return self.send_json(read_json(STAFF_FILE, {}))
+            if path == "/api/img":
+                dest = cached_image(query.get("u", [""])[0])
+                return self.send_file(IMG_CACHE, dest.name)
             if path == "/api/tierlists":
                 return self.send_json(read_json(TIERLISTS_FILE, {"lists": None}))  # None: never saved, the page seeds the defaults
             if path == "/api/dlc/check":

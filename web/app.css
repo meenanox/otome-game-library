@@ -377,6 +377,21 @@ label.inline input { width: auto; }
 .stone.gold b { color: #5c4514; }
 .stone.gold small { color: #8a6a1f; }
 
+/* Tier list export */
+#exportDialog { width: min(1100px, 96vw); }
+.export-body { display: grid; grid-template-columns: 290px 1fr; gap: 18px; padding: 4px; align-items: start; }
+.export-opts { display: flex; flex-direction: column; gap: 10px; }
+.export-opts label { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--muted); }
+.export-opts label.inline { flex-direction: row; align-items: center; }
+.export-opts .row { gap: 10px; }
+.export-opts .row label { flex: 1; }
+.ex-templates { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ex-t { display: flex; flex-direction: column; align-items: flex-start; border-radius: 12px; padding: 6px 10px; white-space: normal; text-align: left; }
+.ex-t small { font-size: 11px; line-height: 1.2; }
+.export-preview { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 8px; max-height: 72vh; overflow: auto; }
+#exCanvas { width: 100%; height: auto; display: block; border-radius: 6px; }
+@media (max-width: 800px) { .export-body { grid-template-columns: 1fr; } }
+
 /* Tier list editor */
 #tierDialog { width: min(560px, 94vw); }
 #tierForm { display: flex; flex-direction: column; gap: 12px; padding: 4px 4px 0; }
