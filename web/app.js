@@ -1950,6 +1950,7 @@ const DEFAULT_TIERS = [
 const tierUI = {
   category: "", size: +(() => { try { return localStorage.getItem("tierSize"); } catch (e) { return 0; } })() || 84,
   current: (() => { try { return JSON.parse(localStorage.getItem("tierCurrent")) || {}; } catch (e) { return {}; } })(),
+  allGames: (() => { try { return localStorage.getItem("tierAllGames") === "1"; } catch (e) { return false; } })(),
 };
 const liUI = { q: "", category: "", sort: "score", unratedOnly: false };
 
@@ -2239,6 +2240,7 @@ function tierControls(host, kind, lists, list, onChange) {
         <button class="chip" data-tcat="" aria-pressed="${!tierUI.category}">All</button>
         ${Object.entries(LABELS.category).map(([k, l]) => `<button class="chip" data-tcat="${k}" aria-pressed="${tierUI.category === k}">${l}</button>`).join("")}
       </div>
+      ${kind === "game" ? `<label class="inline"><input type="checkbox" id="tierAllGames" ${tierUI.allGames ? "checked" : ""}> include unplayed &amp; unfinished games</label>` : ""}
       <label class="inline">size <input type="range" id="tierSize" min="48" max="140" step="4" value="${tierUI.size}"> <output>${tierUI.size}px</output></label>
       <small>Drag a card onto a tier, or click it for a menu.</small>
     </div>`);
@@ -2250,6 +2252,8 @@ function tierControls(host, kind, lists, list, onChange) {
   host.querySelector("[data-tnew]").onclick = () => openTierEditor(kind, null, onChange);
   host.querySelector("[data-tedit]").onclick = () => openTierEditor(kind, list, onChange);
   host.querySelectorAll("[data-tcat]").forEach((b) => b.onclick = () => { tierUI.category = b.dataset.tcat; onChange(); });
+  const all = host.querySelector("#tierAllGames");
+  if (all) all.onchange = () => { tierUI.allGames = all.checked; try { localStorage.setItem("tierAllGames", all.checked ? "1" : "0"); } catch (e) {} onChange(); };
   const size = host.querySelector("#tierSize");
   size.oninput = () => { tierUI.size = +size.value; size.nextElementSibling.textContent = `${size.value}px`;
     host.querySelector(".tier-board")?.style.setProperty("--sz", `${size.value}px`);
@@ -2303,7 +2307,7 @@ VIEWS.litiers = tierPage("li", "LI Tier List", "No love interests yet. Sync your
 
 VIEWS.gametiers = tierPage("game", "Game Tier List", "No games yet.", (list) => {
   const placed = (g) => list.placements[g.id];
-  return state.games.filter((g) => (!tierUI.category || g.category === tierUI.category) && (inDiary(g) || placed(g)))
+  return state.games.filter((g) => (!tierUI.category || g.category === tierUI.category) && (tierUI.allGames || inDiary(g) || placed(g)))
     .map((g) => ({ key: g.id, keys: [g.id], tier: tierOf(list, [g.id]), img: g.cover, label: g.title, sub: LABELS.status[g.status] || "",
                    open: () => { detailTab = "overview"; openDetail(g.id); } }));
 });
