@@ -2590,8 +2590,7 @@ VIEWS.litiers = tierPage("li", "LI Tier List", "No love interests yet. Sync your
 });
 
 VIEWS.gametiers = tierPage("game", "Game Tier List", "No games yet.", (list) => {
-  const placed = (g) => list.placements[g.id];
-  return state.games.filter((g) => (!tierUI.category || g.category === tierUI.category) && (inDiary(g) || placed(g)))
+  return state.games.filter((g) => !tierUI.category || g.category === tierUI.category)
     .map((g) => ({ key: g.id, keys: [g.id], tier: tierOf(list, [g.id]), img: g.cover, label: g.title, sub: LABELS.status[g.status] || "",
                    open: () => { detailTab = "overview"; openDetail(g.id); } }));
 });
