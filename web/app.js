@@ -1868,7 +1868,7 @@ function renderVAs(host) {
   host.querySelectorAll("[data-vacat]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.vacat === vaUI.category)));
 }
 
-// ---------- pages: Timeline, Hall of Shame & Fame ----------
+// ---------- pages: Timeline, All-time Rankings ----------
 
 const openGameFrom = (el) => { const b = el.closest("[data-game]"); if (b) { detailTab = "overview"; openDetail(b.dataset.game); } };
 const dateRange = (g) => `${g.startedOn || "?"} → ${g.finishedOn || "…"}`;
@@ -1901,39 +1901,244 @@ VIEWS.timeline = {
   },
 };
 
+// ---------- all-time rankings ----------
+// Named, ordered lists you can reorder any time: "Route", "Appearance", "Overall story", or anything else you add.
+// Each ranking holds games, routes (a love interest's route in one game) or characters (one card per person).
+// Stored in data/rankings.json; an item is a list of ids that all mean the same thing, so a character keeps its place
+// whether it's known by its VNDB id or by name.
+
+const RANK_KINDS = { game: "Games", route: "Routes", character: "Characters" };
+const rankStore = { lists: null, loading: null, timer: null };
+const rankUI = { q: "", adding: false, current: (() => { try { return localStorage.getItem("rankCurrent") || ""; } catch (e) { return ""; } })() };
+
+function seedRankings() {
+  const mk = (id, name, kind, note) => ({ id, name, kind, note, items: [] });
+  return [
+    mk("rank-route", "Route", "route", "Best routes of all time"),
+    mk("rank-appearance", "Appearance", "character", "Best character designs"),
+    mk("rank-story", "Overall story", "game", "Best stories"),
+  ];
+}
+
+function loadRankings() {
+  rankStore.loading ||= (async () => {
+    await loadPeople(); // characters are grouped by their VNDB ids
+    const doc = await api("GET", "/api/rankings").catch(() => ({ lists: null }));
+    rankStore.lists = doc.lists;
+    if (!rankStore.lists) { rankStore.lists = seedRankings(); await saveRankings(); }
+  })();
+  return rankStore.loading;
+}
+
+function saveRankings() {
+  clearTimeout(rankStore.timer);
+  return api("PUT", "/api/rankings", { lists: rankStore.lists })
+    .catch((e) => toast(`Couldn't save rankings: ${e.message}`, "error"));
+}
+const saveRankingsSoon = () => { clearTimeout(rankStore.timer); rankStore.timer = setTimeout(saveRankings, 250); };
+
+/** Everything that can go in a ranking of this kind: [{keys, img, label, sub, open}]. */
+function rankPool(kind) {
+  const openGame = (id) => () => { detailTab = "overview"; openDetail(id); };
+  if (kind === "game") {
+    return state.games.map((g) => ({ keys: [g.id], img: g.cover, label: g.title, sub: LABELS.status[g.status] || "", open: openGame(g.id) }));
+  }
+  if (kind === "route") {
+    return allLIs().map((x) => ({ keys: [x.key], img: x.image || x.g.cover, label: x.name, sub: x.g.title, open: openGame(x.g.id) }));
+  }
+  return [...groupCharacters(allLIs()).entries()].map(([id, ls]) => {
+    const lead = ls[0], games = [...new Set(ls.map((l) => l.g.title))];
+    return { keys: liPlacementKeys(id, ls), img: ls.find((l) => l.image)?.image || lead.g.cover, label: lead.name,
+             sub: games.length > 2 ? `${games[0]} + ${games.length - 1} more` : games.join(" · "), open: openGame(lead.g.id) };
+  });
+}
+
+/** The list's items as pool entries, in rank order; an item whose game or character is gone shows as missing. */
+function rankEntries(list, pool) {
+  const byKey = new Map();
+  for (const e of pool) for (const k of e.keys) byKey.set(k, e);
+  const seen = new Set();
+  return list.items.map((keys) => {
+    const e = keys.map((k) => byKey.get(k)).find(Boolean);
+    if (e && seen.has(e)) return null; // the same card twice (a character matched by two ids)
+    if (e) seen.add(e);
+    return { keys, entry: e || { keys, img: "", label: "(no longer in your library)", sub: "", open: null, missing: true } };
+  }).filter(Boolean);
+}
+
+function openRankEditor(list, done) {
+  let dlg = $("#rankDialog");
+  if (!dlg) {
+    document.body.insertAdjacentHTML("beforeend", `<dialog id="rankDialog" class="sheet"></dialog>`);
+    dlg = $("#rankDialog");
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+  }
+  const locked = list && list.items.length;
+  dlg.innerHTML = `
+    <form method="dialog" id="rankForm">
+      <header class="sheet-head"><h2>${list ? "Edit ranking" : "New ranking"}</h2>
+        <button type="button" class="icon" data-close aria-label="Close">✕</button></header>
+      <label>Name <input id="rkName" value="${esc(list ? list.name : "")}" maxlength="60" placeholder="e.g. Soundtrack, Plot twists, Best romance"></label>
+      <label>Description <input id="rkNote" value="${esc(list ? list.note : "")}" maxlength="200" placeholder="optional"></label>
+      <label>What do you rank?
+        <select id="rkKind" ${locked ? `disabled title="Empty the ranking first to change this"` : ""}>
+          ${Object.entries(RANK_KINDS).map(([k, l]) => `<option value="${k}" ${list && list.kind === k ? "selected" : ""}>${l}</option>`).join("")}
+        </select></label>
+      <footer class="sheet-foot">
+        ${list ? `<button type="button" class="ghost danger" data-delete style="margin-right:auto">Delete this ranking</button>` : ""}
+        <button type="button" class="ghost" data-close>Cancel</button>
+        <button type="submit" class="primary">${list ? "Save" : "Create"}</button>
+      </footer>
+    </form>`;
+  dlg.onclick = (e) => {
+    if (e.target === dlg) return dlg.close();
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.hasAttribute("data-close")) return dlg.close();
+    if (b.hasAttribute("data-delete")) {
+      if (!confirm(`Delete “${list.name}”${list.items.length ? ` and its ${list.items.length} entries` : ""}? Your games and characters aren't touched.`)) return;
+      rankStore.lists = rankStore.lists.filter((l) => l.id !== list.id);
+      saveRankings();
+      dlg.close();
+      done();
+    }
+  };
+  dlg.onsubmit = async (e) => {
+    e.preventDefault();
+    const name = $("#rkName", dlg).value.trim();
+    if (!name) return toast("Give the ranking a name", "error");
+    const note = $("#rkNote", dlg).value.trim(), kind = $("#rkKind", dlg).value;
+    if (list) { list.name = name; list.note = note; if (!list.items.length) list.kind = kind; }
+    else {
+      const fresh = { id: `r_${Date.now().toString(36)}`, name, kind, note, items: [] };
+      rankStore.lists.push(fresh);
+      rankUI.current = fresh.id;
+      try { localStorage.setItem("rankCurrent", fresh.id); } catch (err) {}
+    }
+    await saveRankings();
+    dlg.close();
+    done();
+  };
+  dlg.showModal();
+}
+
 VIEWS.hall = {
   async render(host) {
-    await loadTierLists();
-    const topTier = new Set(); // games in the top tier of any game tier list
-    for (const l of tierStore.lists.filter((x) => x.kind === "game")) {
-      for (const [id, t] of Object.entries(l.placements)) if (t === l.tiers[0].id) topTier.add(id);
+    const view = host.dataset.view;
+    host.innerHTML = `<h2 class="page-h">All-time Rankings</h2><p class="empty">Loading…</p>`;
+    await Promise.all([loadPeople(), loadRankings()]);
+    if (currentView !== view) return;
+    const redraw = () => VIEWS.hall.render(host);
+    const lists = rankStore.lists;
+    const list = lists.find((l) => l.id === rankUI.current) || lists[0];
+    if (!list) {
+      host.innerHTML = `<h2 class="page-h">All-time Rankings</h2><p class="empty">No rankings yet.</p>
+        <button class="primary" id="rkNew">＋ New ranking</button>`;
+      host.querySelector("#rkNew").onclick = () => openRankEditor(null, redraw);
+      return;
     }
-    const labels = (g) => g.vndbLabels || [];
-    const shame = state.games.filter((g) => g.status === "dropped" || labels(g).includes("Dropped") || labels(g).includes("Stalled"));
-    const fame = state.games.filter((g) => g.rating >= 5 || g.vndbVote >= 90 || topTier.has(g.id))
-      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
-    const stone = (g) => `
-      <article class="stone" tabindex="0" data-game="${esc(g.id)}">
-        <div class="trail-cover">${coverHTML(g)}</div>
-        <b>${esc(g.title)}</b>
-        <small>${labels(g).includes("Stalled") && g.status !== "dropped" ? "paused" : "dropped"}${g.finishedOn || g.startedOn ? ` · ${esc(g.finishedOn || g.startedOn)}` : ""}</small>
-        ${g.bad ? `<small class="epitaph">${esc(g.bad.length > 90 ? g.bad.slice(0, 90) + "…" : g.bad)}</small>` : ""}
-      </article>`;
-    const gold = (g) => `
-      <article class="stone gold" tabindex="0" data-game="${esc(g.id)}">
-        <div class="trail-cover">${coverHTML(g)}</div>
-        <b>${esc(g.title)}</b>
-        <small>${g.rating ? "★".repeat(g.rating) : g.vndbVote ? `${g.vndbVote / 10}/10 on VNDB` : "top tier"}</small>
-      </article>`;
-    host.innerHTML = `<h2 class="page-h">Hall of Shame &amp; Fame</h2>
-      <h3 class="hall-h">🏆 Hall of Fame <small>${fame.length}</small></h3>
-      <p class="muted">Games you rated 5 stars, voted 9+ on VNDB, or put in the top tier of a game tier list.</p>
-      <div class="stones">${fame.map(gold).join("") || `<p class="empty">Nothing here yet.</p>`}</div>
-      <h3 class="hall-h">🪦 Hall of Shame <small>${shame.length}</small></h3>
-      <p class="muted">Dropped or paused games (set the status in a game, or on VNDB and re-sync).</p>
-      <div class="stones">${shame.map(stone).join("") || `<p class="empty">Nothing dropped. Impressive.</p>`}</div>`;
-    host.onclick = (e) => openGameFrom(e.target);
-    host.onkeydown = (e) => { if (e.key === "Enter") openGameFrom(e.target); };
+    const pool = rankPool(list.kind);
+    const pick = (id) => { rankUI.current = id; rankUI.q = ""; try { localStorage.setItem("rankCurrent", id); } catch (e) {} redraw(); };
+    const noun = list.kind === "route" ? "a route" : list.kind === "character" ? "a character" : "a game";
+
+    host.innerHTML = `<h2 class="page-h">All-time Rankings</h2>
+      <div class="filters page-filters">
+        <div class="filter-group"><b>Ranking</b>
+          ${lists.map((l) => `<button class="chip" data-rk="${esc(l.id)}" aria-pressed="${l.id === list.id}">${esc(l.name)}<span class="n">${l.items.length}</span></button>`).join("")}
+          <button class="chip" data-rknew title="Make a new ranking">＋ New</button>
+          <button class="chip" data-rkedit title="Rename this ranking or change what it ranks">⚙ Edit</button>
+        </div>
+      </div>
+      <p class="muted">${esc(list.note || "")}${list.note ? " · " : ""}Ranking ${RANK_KINDS[list.kind].toLowerCase()}. Drag to reorder, or type a new position.</p>
+      <div id="rkList" class="rank-list"></div>
+      <div class="rank-add">
+        <button class="ghost" id="rkToggle">${rankUI.adding ? "Done adding" : `＋ Add ${noun}`}</button>
+        <div id="rkAdder" ${rankUI.adding ? "" : "hidden"}>
+          <input id="rkSearch" type="search" placeholder="Search to add…" value="${esc(rankUI.q)}" autocomplete="off">
+          <div id="rkPool" class="rank-pool"></div>
+        </div>
+      </div>`;
+    host.querySelectorAll("[data-rk]").forEach((b) => b.onclick = () => pick(b.dataset.rk));
+    host.querySelector("[data-rknew]").onclick = () => openRankEditor(null, redraw);
+    host.querySelector("[data-rkedit]").onclick = () => openRankEditor(list, redraw);
+
+    const listEl = host.querySelector("#rkList"), poolEl = host.querySelector("#rkPool");
+    const change = () => {
+      saveRankingsSoon(); drawList(); drawPool();
+      host.querySelector(`[data-rk="${CSS.escape(list.id)}"] .n`).textContent = list.items.length;
+    };
+    const move = (from, to) => {
+      to = Math.max(0, Math.min(list.items.length - 1, to));
+      if (from === to) return;
+      list.items.splice(to, 0, list.items.splice(from, 1)[0]);
+      change();
+    };
+
+    function drawList() {
+      const rows = rankEntries(list, pool);
+      list.items = rows.map((r) => r.keys); // drops accidental duplicates
+      listEl.innerHTML = rows.length ? rows.map((r, n) => `
+        <article class="rank-row ${n < 3 ? `top top${n + 1}` : ""} ${r.entry.missing ? "missing" : ""}" draggable="true" data-i="${n}">
+          <input class="rank-no" type="number" min="1" max="${rows.length}" value="${n + 1}" aria-label="Position">
+          <div class="trail-cover">${portraitHTML(r.entry.img, r.entry.label)}</div>
+          <div class="rank-text"><b>${esc(r.entry.label)}</b><small>${esc(r.entry.sub)}</small></div>
+          <div class="rank-btns">
+            <button type="button" class="ghost" data-up ${n ? "" : "disabled"} aria-label="Move up">▲</button>
+            <button type="button" class="ghost" data-down ${n < rows.length - 1 ? "" : "disabled"} aria-label="Move down">▼</button>
+            <button type="button" class="ghost danger" data-rm aria-label="Remove">✕</button>
+          </div>
+        </article>`).join("") : `<p class="empty">Nothing ranked yet. Use “Add” below to start your list.</p>`;
+      listEl._rows = rows;
+    }
+    function drawPool() {
+      const taken = new Set(list.items.flat());
+      const needle = rankUI.q.trim().toLowerCase();
+      const hits = pool.filter((e) => !e.keys.some((k) => taken.has(k)) && (!needle || `${e.label} ${e.sub}`.toLowerCase().includes(needle)))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      poolEl.innerHTML = hits.length
+        ? hits.slice(0, 40).map((e, n) => `<button type="button" class="rank-pick ghost" data-n="${n}"><span class="trail-cover">${portraitHTML(e.img, e.label)}</span>
+            <span><b>${esc(e.label)}</b><small>${esc(e.sub)}</small></span></button>`).join("") + (hits.length > 40 ? `<small class="muted">${hits.length - 40} more — keep typing to narrow it down.</small>` : "")
+        : `<p class="empty">${needle ? "No match." : "Everything is already ranked."}</p>`;
+      poolEl._hits = hits;
+    }
+    drawList();
+    drawPool();
+
+    host.querySelector("#rkToggle").onclick = () => { rankUI.adding = !rankUI.adding; redraw(); };
+    host.querySelector("#rkSearch").oninput = (e) => { rankUI.q = e.target.value; drawPool(); };
+    poolEl.onclick = (e) => {
+      const b = e.target.closest(".rank-pick");
+      if (!b) return;
+      list.items.push(poolEl._hits[+b.dataset.n].keys);
+      change();
+    };
+    listEl.onclick = (e) => {
+      const row = e.target.closest(".rank-row");
+      if (!row) return;
+      const i = +row.dataset.i;
+      if (e.target.closest("[data-up]")) return move(i, i - 1);
+      if (e.target.closest("[data-down]")) return move(i, i + 1);
+      if (e.target.closest("[data-rm]")) { list.items.splice(i, 1); return change(); }
+      if (e.target.closest(".rank-no, button")) return;
+      const open = listEl._rows[i].entry.open;
+      if (open) open();
+    };
+    listEl.onchange = (e) => {
+      const row = e.target.closest(".rank-row");
+      if (!row || !e.target.classList.contains("rank-no")) return;
+      move(+row.dataset.i, (parseInt(e.target.value, 10) || 1) - 1);
+    };
+    let dragFrom = null;
+    listEl.ondragstart = (e) => { const r = e.target.closest(".rank-row"); if (r) { dragFrom = +r.dataset.i; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(dragFrom)); } };
+    listEl.ondragover = (e) => { const r = e.target.closest(".rank-row"); if (r && dragFrom != null) { e.preventDefault(); listEl.querySelectorAll(".over").forEach((x) => x.classList.remove("over")); r.classList.add("over"); } };
+    listEl.ondrop = (e) => {
+      const r = e.target.closest(".rank-row");
+      if (!r || dragFrom == null) return;
+      e.preventDefault();
+      const from = dragFrom; dragFrom = null;
+      move(from, +r.dataset.i);
+    };
+    listEl.ondragend = () => { dragFrom = null; listEl.querySelectorAll(".over").forEach((x) => x.classList.remove("over")); };
   },
 };
 

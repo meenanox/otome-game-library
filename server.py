@@ -29,6 +29,7 @@ SETTINGS_FILE = DATA / "settings.json"
 CHARACTERS_FILE = DATA / "characters.json"  # VNDB character id -> record (fetched data only)
 STAFF_FILE = DATA / "staff.json"            # VNDB staff id -> voice actor record
 TIERLISTS_FILE = DATA / "tierlists.json"    # the user's tier lists: names, tiers (name + colour) and placements
+RANKINGS_FILE = DATA / "rankings.json"      # the user's all-time rankings: named, ordered lists of games / routes / characters
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", 9999))  # 8765 is taken by AnkiConnect
@@ -1073,6 +1074,30 @@ def clean_tierlists(doc):
     return {"lists": out}
 
 
+def clean_rankings(doc):
+    """Validate a rankings document from the page. Raises ValueError with something readable."""
+    lists = doc.get("lists") if isinstance(doc, dict) else None
+    if not isinstance(lists, list) or len(lists) > 60:
+        raise ValueError("Rankings should be a list of at most 60.")
+    out, seen = [], set()
+    for l in lists:
+        if not isinstance(l, dict) or l.get("kind") not in ("game", "route", "character") or not str(l.get("id") or ""):
+            raise ValueError("A ranking is missing its id or kind.")
+        lid = str(l["id"])[:40]
+        if lid in seen:
+            raise ValueError("Two rankings share an id.")
+        seen.add(lid)
+        items = []
+        for it in (l.get("items") if isinstance(l.get("items"), list) else [])[:1000]:
+            # an item is a list of ids that all mean the same thing (a character can be known by more than one)
+            keys = [str(k)[:200] for k in it if isinstance(k, str) and k][:8] if isinstance(it, list) else []
+            if keys:
+                items.append(keys)
+        out.append({"id": lid, "kind": l["kind"], "name": str(l.get("name") or "Ranking")[:60],
+                    "note": str(l.get("note") or "")[:200], "items": items})
+    return {"lists": out}
+
+
 def library_summary():
     games = load_games()
     return {
@@ -1298,6 +1323,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(read_json(CHARACTERS_FILE, {}))
             if path == "/api/staff":
                 return self.send_json(read_json(STAFF_FILE, {}))
+            if path == "/api/rankings":
+                return self.send_json(read_json(RANKINGS_FILE, {"lists": None}))  # None: never saved, the page seeds the defaults
             if path == "/api/tierlists":
                 return self.send_json(read_json(TIERLISTS_FILE, {"lists": None}))  # None: never saved, the page seeds the defaults
             if path == "/api/dlc/check":
@@ -1372,6 +1399,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/rankings":
+            try:
+                doc = clean_rankings(self.read_body())
+                with lock:
+                    write_json(RANKINGS_FILE, doc)
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
+            return self.send_json(doc)
         if path == "/api/tierlists":
             try:
                 doc = clean_tierlists(self.read_body())
