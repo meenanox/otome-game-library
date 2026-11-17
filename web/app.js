@@ -294,21 +294,22 @@ function gsmOptions(selected) {
 }
 
 function renderGsm() {
-  const withLines = gsmState.rows.filter((r) => r.lines > 0);
+  const withLines = gsmState.rows.filter((r) => r.lines > 0 || r.oldChars > 0);
   const empty = gsmState.rows.length - withLines.length;
   const total = withLines.reduce((n, r) => n + r.lines, 0);
+  const oldTotal = withLines.reduce((n, r) => n + r.oldChars, 0);
   const row = (r) => {
     // Chosen link wins, then the app's suggestion; only exact VNDB / title matches are pre-filled.
     const pick = r.decided ? r.linked : r.suggested;
     const note = r.decided ? "" : r.suggested ? `<small class="muted">matched by ${r.suggestedBy === "vndb" ? "VNDB id" : "title"}</small>` : `<small class="muted">no match: pick a game or skip</small>`;
     return `<div class="dlc-row">
       <b>${esc(r.title)}</b>
-      <small>${fmt(r.lines)} lines · ${fmt(r.chars)} characters · ${gsmDate(r.first)} – ${gsmDate(r.last)}${r.imported ? ` · ${fmt(r.imported)} already imported` : ""}</small>
+      <small>${r.lines ? `${fmt(r.lines)} lines · ${fmt(r.chars)} characters · ${gsmDate(r.first)} – ${gsmDate(r.last)}${r.imported ? ` · ${fmt(r.imported)} already imported` : ""}` : "No sentences stored"}${r.oldChars ? `<br>Older stats: ${fmt(r.oldChars)} characters over ${fmt(r.oldDays)} days · ${gsmHours(r.oldSeconds)}` : ""}</small>
       <select data-gsm="${esc(r.id)}" aria-label="Library game for ${esc(r.title)}">${gsmOptions(pick)}</select> ${note}
     </div>`;
   };
   $("#itchBody").innerHTML = `
-    <p>GSM has <b>${fmt(total)}</b> logged sentences across ${withLines.length} games. Pick the library game for each one, then import. GSM's database is only read, never changed. Importing again later adds just the new lines.</p>
+    <p>GSM has <b>${fmt(total)}</b> logged sentences${oldTotal ? ` and <b>${fmt(oldTotal)}</b> characters of older daily stats` : ""} across ${withLines.length} games. Pick the library game for each one, then import. GSM's database is only read, never changed. Importing again later adds just the new lines.</p>
     ${withLines.map(row).join("") || `<p class="muted">GSM has no logged sentences yet.</p>`}
     ${empty ? `<p class="muted"><small>${empty} GSM games with no sentences are hidden.</small></p>` : ""}`;
   $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button><button type="button" class="primary" id="gsmGo">Import</button>`;
@@ -339,7 +340,7 @@ async function loadReading(g, offset = 0) {
   try {
     const d = await api("GET", `/api/gsm/log/${encodeURIComponent(g.id)}?offset=${offset}&q=${encodeURIComponent(readingQuery)}`);
     if (detailTab !== "reading" || !$("#readingPane")) return;
-    if (!d.linked || !d.lines) {
+    if (!d.linked || !(d.lines || d.chars)) {
       pane.innerHTML = `<p class="muted">${d.linked ? "No sentences imported for this game yet." : "No GameSentenceMiner sentences are linked to this game."} Use <b>Import from GSM</b> in the side menu.</p>`;
       return;
     }
@@ -356,7 +357,7 @@ async function loadReading(g, offset = 0) {
       </div>
       <input type="search" id="readingSearch" placeholder="Search sentences…" value="${esc(readingQuery)}" aria-label="Search sentences">
       <p class="muted"><small>${fmt(d.total)} matching · showing ${fmt(offset + 1)}–${fmt(offset + d.items.length)}, newest first</small></p>
-      <ol class="reading-lines">${items || `<li class="muted">Nothing matches.</li>`}</ol>
+      <ol class="reading-lines">${items || `<li class="muted">${d.live ? "Nothing matches." : "GSM only holds daily totals for this game, not the sentences."}</li>`}</ol>
       <div class="detail-controls">
         <button type="button" class="ghost" id="readingPrev" ${offset ? "" : "disabled"}>← Newer</button>
         <button type="button" class="ghost" id="readingNext" ${offset + d.items.length < d.total ? "" : "disabled"}>Older →</button>

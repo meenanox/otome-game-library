@@ -247,6 +247,8 @@ def gsm_store():
         CREATE INDEX IF NOT EXISTS lines_game ON lines (game_id, ts);
         CREATE TABLE IF NOT EXISTS stats (gsm_game_id TEXT PRIMARY KEY, seconds REAL, cards INTEGER, days INTEGER);
         CREATE TABLE IF NOT EXISTS daily (gsm_game_id TEXT, date TEXT, seconds REAL, PRIMARY KEY (gsm_game_id, date));
+        -- daily totals GSM holds for older reading imported from another tracker (no sentence text)
+        CREATE TABLE IF NOT EXISTS archive (gsm_game_id TEXT, date TEXT, chars INTEGER, lines INTEGER, seconds REAL, PRIMARY KEY (gsm_game_id, date));
     """)
     return db
 
@@ -266,6 +268,20 @@ def gsm_suggest(g, games):
     return None, ""
 
 
+def gsm_third_party(src, gsm_id=None):
+    """GSM's `third_party_stats`: per-day totals imported from other trackers. Empty if this GSM version has no such table."""
+    try:
+        if gsm_id is None:
+            return src.execute("""SELECT game_id, COUNT(DISTINCT date) days, SUM(CAST(characters_read AS INTEGER)) chars,
+                                         SUM(CAST(time_read_seconds AS REAL)) seconds
+                                  FROM third_party_stats WHERE game_id IS NOT NULL GROUP BY game_id""").fetchall()
+        return src.execute("""SELECT date, SUM(CAST(characters_read AS INTEGER)) chars, SUM(CAST(lines_read AS INTEGER)) lines,
+                                     SUM(CAST(time_read_seconds AS REAL)) seconds
+                              FROM third_party_stats WHERE game_id = ? GROUP BY date""", (gsm_id,)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
 def gsm_games():
     """Every GSM game with its sentence count, the suggested/chosen library match and how much is already imported."""
     links = read_json(GSM_LINKS_FILE, {})
@@ -277,6 +293,7 @@ def gsm_games():
                    COUNT(l.id) AS lines, COALESCE(SUM(LENGTH(l.line_text)), 0) AS chars,
                    MIN(l.timestamp) AS first, MAX(l.timestamp) AS last
             FROM games g LEFT JOIN game_lines l ON l.game_id = g.id GROUP BY g.id ORDER BY lines DESC""").fetchall()
+        old = {r["game_id"]: r for r in gsm_third_party(src)}
     finally:
         src.close()
     store = gsm_store()
@@ -289,6 +306,9 @@ def gsm_games():
             "id": r["id"], "title": r["title_original"] or r["title_english"] or r["obs_scene_name"] or "(untitled)",
             "romaji": r["title_romaji"] or r["title_english"] or "", "vndbId": r["vndb_id"] or "",
             "lines": r["lines"], "chars": r["chars"], "first": r["first"], "last": r["last"],
+            "oldChars": old[r["id"]]["chars"] if r["id"] in old else 0,
+            "oldDays": old[r["id"]]["days"] if r["id"] in old else 0,
+            "oldSeconds": old[r["id"]]["seconds"] if r["id"] in old else 0,
             "imported": imported.get(r["id"], 0),
             "linked": links.get(r["id"]) if r["id"] in links else None,   # None: not decided yet; "" / null saved = skipped
             "decided": r["id"] in links,
@@ -329,6 +349,9 @@ def gsm_import(choices):
                 store.executemany("INSERT INTO daily VALUES (?,?,?) ON CONFLICT DO UPDATE SET seconds = seconds + excluded.seconds",
                                   [(gsm_id, r["date"], r["s"]) for r in src.execute(
                                       "SELECT date, SUM(CAST(total_reading_time_seconds AS REAL)) s FROM game_daily_rollup WHERE game_id = ? GROUP BY date", (gsm_id,))])
+                store.execute("DELETE FROM archive WHERE gsm_game_id = ?", (gsm_id,))
+                store.executemany("INSERT INTO archive VALUES (?,?,?,?,?)",
+                                  [(gsm_id, r["date"], r["chars"] or 0, r["lines"] or 0, r["seconds"] or 0) for r in gsm_third_party(src, gsm_id)])
     finally:
         src.close()
         store.close()
@@ -345,6 +368,7 @@ def gsm_days():
     try:
         rows = store.execute("SELECT ts, game_id, gsm_game_id, LENGTH(text) n FROM lines ORDER BY gsm_game_id, ts").fetchall()
         rollup = {(r["gsm_game_id"], r["date"]): r["seconds"] for r in store.execute("SELECT * FROM daily")}
+        arch = store.execute("SELECT * FROM archive").fetchall()
     finally:
         store.close()
     acc = {}      # (date, gsm game) -> [library game, lines, chars, estimated seconds]
@@ -364,6 +388,16 @@ def gsm_days():
         item["lines"] += lines
         item["chars"] += chars
         item["seconds"] += secs
+    # Older reading GSM only has daily totals for. A day we hold real sentences for wins, so nothing is counted twice.
+    links = read_json(GSM_LINKS_FILE, {})
+    for r in arch:
+        lib_id = links.get(r["gsm_game_id"])
+        if not lib_id or (r["date"], r["gsm_game_id"]) in acc:
+            continue
+        item = days.setdefault(r["date"], {}).setdefault(lib_id, {"gameId": lib_id, "lines": 0, "chars": 0, "seconds": 0.0})
+        item["lines"] += r["lines"]
+        item["chars"] += r["chars"]
+        item["seconds"] += r["seconds"]
     return [{"date": d, "items": sorted(v.values(), key=lambda i: -i["chars"])} for d, v in sorted(days.items())]
 
 
@@ -380,11 +414,21 @@ def gsm_game_log(lib_id, offset=0, query=""):
         rows = store.execute("SELECT ts, text FROM lines WHERE game_id = ? AND text LIKE ? ESCAPE '\\' ORDER BY ts DESC LIMIT 100 OFFSET ?",
                              (lib_id, like, max(0, int(offset or 0)))).fetchall()
         total = store.execute("SELECT COUNT(*) FROM lines WHERE game_id = ? AND text LIKE ? ESCAPE '\\'", (lib_id, like)).fetchone()[0]
-        days = store.execute("SELECT COUNT(DISTINCT date(ts, 'unixepoch', 'localtime')) FROM lines WHERE game_id = ?", (lib_id,)).fetchone()[0]
+        live = {(r[0], r[1]) for r in store.execute(
+            "SELECT DISTINCT gsm_game_id, date(ts, 'unixepoch', 'localtime') FROM lines WHERE game_id = ?", (lib_id,))}
+        arch = [r for r in store.execute(f"SELECT * FROM archive WHERE gsm_game_id IN ({marks})", gsm_ids)
+                if (r["gsm_game_id"], r["date"]) not in live]
     finally:
         store.close()
-    return {"linked": bool(gsm_ids), "lines": agg["n"], "chars": agg["c"], "first": agg["f"], "last": agg["l"], "days": days,
-            "seconds": sum(r["seconds"] for r in stats), "cards": sum(r["cards"] for r in stats),
+    first, last = agg["f"], agg["l"]
+    for r in arch:  # older daily totals: counted for days we have no sentences for
+        t = time.mktime(time.strptime(r["date"], "%Y-%m-%d"))
+        first = t if first is None else min(first, t)
+        last = t if last is None else max(last, t)
+    return {"linked": bool(gsm_ids), "live": agg["n"], "lines": agg["n"] + sum(r["lines"] for r in arch),
+            "chars": agg["c"] + sum(r["chars"] for r in arch), "first": first, "last": last,
+            "days": len(live) + len(arch),
+            "seconds": sum(r["seconds"] for r in stats) + sum(r["seconds"] for r in arch), "cards": sum(r["cards"] for r in stats),
             "total": total, "items": [{"ts": r["ts"], "text": r["text"]} for r in rows]}
 
 
