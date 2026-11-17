@@ -2356,8 +2356,17 @@ const tierOf = (list, keys) => {
   return hit || "";
 };
 
-function placeItem(list, keys, tierId) {
+/** Put an item in a tier (or Unranked with ""), in front of the item `beforeKey`, or last in its tier when that's null.
+ *  list.order is one list of item keys; a tier shows its items in that order, so only relative order matters. */
+function placeItem(list, keys, tierId, itemKey, beforeKey = null, shown = []) {
   for (const k of keys) { if (tierId) list.placements[k] = tierId; else delete list.placements[k]; }
+  if (itemKey) {
+    const order = (list.order || []).filter((k) => k !== itemKey);
+    for (const k of shown) if (k !== itemKey && !order.includes(k)) order.push(k); // pin the order you can currently see
+    const at = beforeKey ? order.indexOf(beforeKey) : -1;
+    if (at < 0) order.push(itemKey); else order.splice(at, 0, itemKey);
+    list.order = order;
+  }
   saveTierListsSoon();
 }
 
@@ -2377,16 +2386,43 @@ function renderTierBoard(host, items, tiers, { setTier, open }) {
   const board = host.querySelector(".tier-board");
   let dragKey = null;
   board.ondragstart = (e) => { const c = e.target.closest(".tier-card"); if (c) { dragKey = c.dataset.key; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", dragKey); } };
-  board.ondragover = (e) => { const r = e.target.closest(".tier-row"); if (r && dragKey) { e.preventDefault(); r.classList.add("over"); } };
-  board.ondragleave = (e) => e.target.closest(".tier-row")?.classList.remove("over");
-  board.ondrop = (e) => {
+  const clearMarks = () => board.querySelectorAll(".over, .before").forEach((x) => x.classList.remove("over", "before"));
+  /** Where a drop would land: the card it goes in front of (null = last in the row). Left half of a card = before it. */
+  const dropSpot = (e) => {
     const r = e.target.closest(".tier-row");
-    if (!r || !dragKey) return;
+    if (!r) return null;
+    const cards = [...r.querySelectorAll(".tier-card")].filter((c) => c.dataset.key !== dragKey);
+    const over = e.target.closest(".tier-card");
+    let before = null;
+    if (over && over.dataset.key !== dragKey) {
+      const b = over.getBoundingClientRect();
+      before = e.clientX < b.left + b.width / 2 ? over : cards[cards.indexOf(over) + 1] || null;
+    }
+    return { row: r, before };
+  };
+  board.ondragover = (e) => {
+    if (!dragKey) return;
+    const d = dropSpot(e);
+    if (!d) return;
+    e.preventDefault();
+    clearMarks();
+    d.row.classList.add("over");
+    d.before?.classList.add("before");
+  };
+  board.ondragleave = (e) => { if (!board.contains(e.relatedTarget)) clearMarks(); };
+  board.ondrop = (e) => {
+    if (!dragKey) return;
+    const d = dropSpot(e);
+    if (!d) return;
     e.preventDefault();
     const key = dragKey; dragKey = null;
-    if (byKey[key] && byKey[key].tier !== r.dataset.tier) setTier(byKey[key], r.dataset.tier);
+    clearMarks();
+    if (!byKey[key]) return;
+    const beforeKey = d.before ? d.before.dataset.key : null;
+    if (beforeKey === key) return;
+    setTier(byKey[key], d.row.dataset.tier, beforeKey);
   };
-  board.ondragend = () => { dragKey = null; board.querySelectorAll(".over").forEach((x) => x.classList.remove("over")); };
+  board.ondragend = () => { dragKey = null; clearMarks(); };
   board.onclick = (e) => {
     const c = e.target.closest(".tier-card");
     if (!c) return;
@@ -2408,7 +2444,7 @@ function renderTierBoard(host, items, tiers, { setTier, open }) {
       const b = ev.target.closest("button");
       if (!b) return;
       close();
-      if (b.hasAttribute("data-open")) open(it); else setTier(it, b.dataset.t);
+      if (b.hasAttribute("data-open")) open(it); else if (b.dataset.t !== it.tier) setTier(it, b.dataset.t);
     };
   };
 }
@@ -2501,7 +2537,8 @@ function openTierEditor(kind, list, done) {
     if (list) {
       Object.assign(list, { name, tiers, placements: keep(list.placements) });
     } else {
-      const fresh = { id: `l_${Date.now().toString(36)}`, kind, name, tiers, placements: draft.copy && current ? keep({ ...current.placements }) : {} };
+      const fresh = { id: `l_${Date.now().toString(36)}`, kind, name, tiers, placements: draft.copy && current ? keep({ ...current.placements }) : {},
+        order: draft.copy && current ? [...(current.order || [])] : [] };
       tierStore.lists.push(fresh);
       tierUI.current[kind] = fresh.id;
       try { localStorage.setItem("tierCurrent", JSON.stringify(tierUI.current)); } catch (err) {}
@@ -2566,10 +2603,12 @@ function tierPage(kind, title, empty, build) {
       board.id = "tierBoardHost";
       host.append(board);
       const items = build(list);
+      const ord = new Map((list.order || []).map((k, i) => [k, i]));
+      items.sort((a, b) => (ord.get(a.key) ?? 1e9) - (ord.get(b.key) ?? 1e9)); // stable: unplaced items keep their usual order
       if (!items.length) { board.innerHTML = `<p class="empty">${esc(empty)}</p>`; return; }
       const y = scrollY;
       renderTierBoard(board, items, list.tiers, {
-        setTier: (it, tierId) => { placeItem(list, it.keys, tierId); redraw().then(() => scrollTo(0, y)); },
+        setTier: (it, tierId, beforeKey = null) => { placeItem(list, it.keys, tierId, it.key, beforeKey, items.map((x) => x.key)); redraw().then(() => scrollTo(0, y)); },
         open: (it) => it.open(),
       });
     },
@@ -2595,28 +2634,34 @@ VIEWS.gametiers = tierPage("game", "Game Tier List", "No games yet.", (list) => 
                    open: () => { detailTab = "overview"; openDetail(g.id); } }));
 });
 
-function liCardHTML(l) {
-  return `<article class="li-card" data-key="${esc(l.key)}">
-    <button type="button" class="li-face" data-opengame="${esc(l.g.id)}" title="Open ${esc(l.g.title)}">${portraitHTML(l.image || l.g.cover, l.name)}</button>
+/** One card per character: the same person in several games (sequels, ports, fandiscs) shows once, with a score per game. */
+function liCardHTML(ls) {
+  const lead = ls[0];
+  const va = (ls.find((l) => l.va) || {}).va;
+  const original = (ls.find((l) => l.original) || {}).original;
+  const image = (ls.find((l) => l.image) || {}).image || lead.g.cover;
+  return `<article class="li-card">
+    <button type="button" class="li-face" data-opengame="${esc(lead.g.id)}" title="Open ${esc(lead.g.title)}">${portraitHTML(image, lead.name)}</button>
     <div class="li-body">
-      <b>${esc(l.name)}</b>${l.original ? `<small>${esc(l.original)}</small>` : ""}
-      <small>${esc(l.g.title)}${l.va ? ` · CV ${esc(l.va)}` : ""}</small>
-      <div class="li-edit">
+      <b>${esc(lead.name)}</b>${original ? `<small>${esc(original)}</small>` : ""}${va ? `<small>CV ${esc(va)}</small>` : ""}
+      ${ls.map((l) => `<div class="li-game">
+        <button type="button" class="li-gname" data-opengame="${esc(l.g.id)}" title="Open ${esc(l.g.title)}">${esc(l.g.title)}</button>
         <label>score <input type="number" min="0" max="10" step="0.5" data-score="${esc(l.key)}" value="${l.score ?? ""}" placeholder="–"></label>
-      </div>
+      </div>`).join("")}
     </div>
   </article>`;
 }
 
 function renderLIs(host) {
   const needle = liUI.q.trim().toLowerCase();
-  let list = allLIs().filter((l) => (!liUI.category || l.g.category === liUI.category) &&
-    (!liUI.unratedOnly || l.score == null) &&
-    (!needle || [l.name, l.original, l.va, l.g.title].some((s) => (s || "").toLowerCase().includes(needle))));
+  const matches = (l) => [l.name, l.original, l.va, l.g.title].some((s) => (s || "").toLowerCase().includes(needle));
+  let list = [...groupCharacters(allLIs().filter((l) => !liUI.category || l.g.category === liUI.category)).values()]
+    .filter((ls) => (!liUI.unratedOnly || ls.some((l) => l.score == null)) && (!needle || ls.some(matches)));
+  const best = (ls) => Math.max(...ls.map((l) => l.score ?? -1));
   const sorters = {
-    score: (a, b) => (b.score ?? -1) - (a.score ?? -1) || a.name.localeCompare(b.name),
-    name: (a, b) => a.name.localeCompare(b.name),
-    game: (a, b) => a.g.title.localeCompare(b.g.title),
+    score: (a, b) => best(b) - best(a) || a[0].name.localeCompare(b[0].name),
+    name: (a, b) => a[0].name.localeCompare(b[0].name),
+    game: (a, b) => a[0].g.title.localeCompare(b[0].g.title),
   };
   list.sort(sorters[liUI.sort]);
   host.querySelector("#liList").innerHTML = list.length ? list.map(liCardHTML).join("") : `<p class="empty">No love interests match.</p>`;

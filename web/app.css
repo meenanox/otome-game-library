@@ -405,6 +405,7 @@ label.inline input { width: auto; }
 /* Tier lists and love interests */
 .tier-board { display: flex; flex-direction: column; gap: 4px; --sz: 84px; }
 .tier-row { display: grid; grid-template-columns: 84px 1fr; min-height: calc(var(--sz) * 1.5 + 16px); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.tier-card.before { box-shadow: -4px 0 0 var(--accent); border-radius: 4px; }
 .tier-row.over { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--accent-soft); }
 .tier-label { display: grid; place-items: center; font: 700 26px "Cormorant Garamond", Georgia, serif; color: #fff; text-align: center; padding: 4px; }
 .tier-row:last-child .tier-label { font-size: 13px; font-family: inherit; font-weight: 600; }
@@ -426,6 +427,11 @@ label.inline input { width: auto; }
 .li-face img, .li-face .face-txt { width: 100%; height: 100%; object-fit: cover; object-position: top; display: grid; place-items: center; border-radius: 6px; background: var(--surface-2); }
 .li-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .li-body small { color: var(--muted); }
+.li-game { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.li-game label { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); flex: none; }
+.li-game input { padding: 3px 6px; width: 64px; }
+.li-gname { all: unset; cursor: pointer; font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.li-gname:hover { color: var(--accent); text-decoration: underline; }
 .li-edit { display: flex; gap: 10px; margin-top: 4px; }
 .li-edit label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); }
 .li-edit input, .li-edit select { padding: 3px 6px; width: 72px; }

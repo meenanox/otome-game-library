@@ -1264,8 +1264,10 @@ def clean_tierlists(doc):
         if not tiers:
             raise ValueError(f"'{l.get('name') or lid}' needs at least one tier.")
         place = l.get("placements") if isinstance(l.get("placements"), dict) else {}
+        order = l.get("order") if isinstance(l.get("order"), list) else []
         out.append({"id": lid, "kind": l["kind"], "name": str(l.get("name") or "Tier list")[:60], "tiers": tiers,
-                    "placements": {str(k)[:200]: v for k, v in place.items() if v in tids}})
+                    "placements": {str(k)[:200]: v for k, v in place.items() if v in tids},
+                    "order": [str(k)[:200] for k in order[:5000] if isinstance(k, str)]})
     return {"lists": out}
 
 
