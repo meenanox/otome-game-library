@@ -43,8 +43,11 @@ function toast(msg, kind = "") {
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
   el.textContent = msg;
-  $("#toasts").append(el);
-  setTimeout(() => el.remove(), kind === "error" ? 6000 : 3000);
+  const box = $("#toasts");
+  box.append(el);
+  // A modal dialog sits in the browser's top layer, above any z-index. Re-opening the toasts as a popover puts them above it.
+  try { if (box.matches(":popover-open")) box.hidePopover(); box.showPopover(); } catch (e) {}
+  setTimeout(() => { el.remove(); if (!box.children.length) try { box.hidePopover(); } catch (e) {} }, kind === "error" ? 6000 : 3000);
 }
 
 const year = (d) => (d || "").slice(0, 4);

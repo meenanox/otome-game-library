@@ -277,7 +277,9 @@ label.inline input { width: auto; }
 .foot-note { margin-right: auto; align-self: center; font-size: 13px; color: var(--muted); }
 
 /* toasts */
-.toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: grid; gap: 8px; z-index: 50; }
+.toasts { position: fixed; inset: auto auto 20px 50%; transform: translateX(-50%); margin: 0; padding: 0; border: 0; background: none; overflow: visible;
+  max-width: 92vw; display: grid; gap: 8px; z-index: 50; }
+.toasts:not(:popover-open) { display: none; }
 .toast { background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 12px; box-shadow: var(--shadow); font-size: 14px; animation: pop .2s ease; }
 .toast.error { background: var(--st-bad); color: #fff; }
 @keyframes pop { from { transform: translateY(8px); opacity: 0; } }
