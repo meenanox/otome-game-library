@@ -6,7 +6,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const LABELS = {
-  category: { otome: "Otome", bl: "BL", josei: "Josei-muke" },
+  category: { otome: "Otome", bl: "BL", josei: "Josei-muke", other: "Non-otome" },
   format: { pc: "PC", emulated: "Emulated", physical: "Physical" },
   status: { unplayed: "Unplayed", playing: "Playing", completed: "Completed", dropped: "Dropped" },
   platform: { pc: "PC", psp: "PSP", vita: "PS Vita", switch: "Switch", ps4: "PS4", other: "Other" },

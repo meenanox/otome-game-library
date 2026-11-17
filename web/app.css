@@ -15,6 +15,7 @@
   --cat-otome: #e0739f;
   --cat-bl: #5b8fd6;
   --cat-josei: #c99a3c;
+  --cat-other: #5f9a82;
   --st-none: #cbbcc5;
   --st-progress: #e3a43c;
   --st-good: #4fae84;
@@ -38,6 +39,7 @@
   --cat-otome: #e07aa6;
   --cat-bl: #74a2e6;
   --cat-josei: #d9b065;
+  --cat-other: #78b89e;
   --st-none: #4e4054;
   --st-progress: #e0a547;
   --st-good: #5cc095;
@@ -133,6 +135,7 @@ main { padding: 8px 24px 48px; }
 }
 .placeholder.cat-bl { background: linear-gradient(150deg, var(--cat-bl), #6e5bb8); }
 .placeholder.cat-josei { background: linear-gradient(150deg, var(--cat-josei), #c4687a); }
+.placeholder.cat-other { background: linear-gradient(150deg, var(--cat-other), #4f6b5e); }
 .badge {
   position: absolute; top: 8px; left: 8px;
   font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
@@ -141,6 +144,7 @@ main { padding: 8px 24px 48px; }
 }
 .badge.cat-bl { background: var(--cat-bl); }
 .badge.cat-josei { background: var(--cat-josei); }
+.badge.cat-other { background: var(--cat-other); }
 .fmt { position: absolute; top: 8px; right: 8px; font-size: 11px; padding: 3px 8px; border-radius: 999px;
        background: rgba(20, 10, 20, .6); color: #fff; }
 .play {
