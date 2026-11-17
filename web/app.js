@@ -2032,13 +2032,25 @@ function vaGroups() {
       grp.roles.push({ ...c, game: g });
     }
   }
+  // The same character in several games (sequels, ports, fandiscs) is one role for that actor, listing every game
+  for (const grp of groups.values()) {
+    const merged = new Map();
+    for (const r of grp.roles) {
+      const id = (r.original || r.name || "").toLowerCase().replace(/[\s・･·.\-]/g, "") || r.game.id;
+      const m = merged.get(id);
+      if (!m) { merged.set(id, { ...r, games: [r.game] }); continue; }
+      if (!m.games.includes(r.game)) m.games.push(r.game);
+      if (!m.image && r.image) { m.image = r.image; m.nsfw = r.nsfw; }
+    }
+    grp.roles = [...merged.values()];
+  }
   return [...groups.values()]
     .filter((v) => !needle || [v.name, v.original].some((s) => (s || "").toLowerCase().includes(needle)))
     .sort((a, b) => b.roles.length - a.roles.length || (a.original || a.name).localeCompare(b.original || b.name));
 }
 
 function roleHTML(r) {
-  const label = `${r.name}${r.original ? " · " + r.original : ""} — ${r.game.title}`;
+  const label = `${r.name}${r.original ? " · " + r.original : ""} — ${r.games.map((g) => g.title).join("; ")}`;
   const letter = esc((r.name || "?")[0]);
   const face = vaUI.faces && (r.image || r.game.cover)
     ? `<img src="${esc(r.image || r.game.cover)}" alt="" loading="lazy" data-letter="${letter}">` : `<span class="face-txt">${letter}</span>`;
