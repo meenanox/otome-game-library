@@ -10,7 +10,7 @@ const LABELS = {
   format: { pc: "PC", emulated: "Emulated", physical: "Physical" },
   status: { unplayed: "Unplayed", playing: "Playing", completed: "Completed", dropped: "Dropped" },
   platform: { pc: "PC", psp: "PSP", vita: "PS Vita", switch: "Switch", ps4: "PS4", other: "Other" },
-  route: { none: "—", progress: "Playing", good: "Good end", bad: "Bad end" },
+  route: { none: "—", progress: "Playing", completed: "Completed", dropped: "Dropped" },
 };
 const THEMES = ["pastel", "noir"];
 
@@ -61,7 +61,9 @@ const hoursOf = (g) => g.jiten.characterCount / (state.settings.readingSpeed || 
 const hoursText = (h) => h < 1 ? "<1" : h < 10 ? h.toFixed(1) : String(Math.round(h));
 const readPct = (g) => g.jiten?.readPercent || 0;
 let detailTab = "overview";
-const cleared = (g) => (g.routes || []).filter((r) => r.state === "good" || r.state === "bad").length;
+// Routes saved before the Completed/Dropped options used "good" / "bad" ending: both count as completed
+const routeState = (r) => r.state === "good" || r.state === "bad" ? "completed" : r.state || "none";
+const cleared = (g) => (g.routes || []).filter((r) => routeState(r) === "completed").length;
 
 function coverHTML(g) {
   if (g.cover) return `<img class="cover" src="${esc(g.cover)}" alt="" loading="lazy">`;
@@ -131,7 +133,7 @@ function visibleGames() {
 
 function cardHTML(g) {
   const routes = g.routes || [];
-  const segs = routes.map((r) => `<i class="${r.state === "progress" ? "progress-s" : esc(r.state)}"></i>`).join("");
+  const segs = routes.map((r) => `<i class="${routeState(r) === "progress" ? "progress-s" : esc(routeState(r))}"></i>`).join("");
   const meta = [g.brand, year(g.released), LABELS.platform[g.platform]].filter(Boolean).map(esc).join(" · ");
   return `
     <article class="card" tabindex="0" data-open="${esc(g.id)}">
@@ -167,6 +169,12 @@ function render() {
 
 // ---------- detail dialog ----------
 
+/** A love interest's portrait: the fetched VNDB character image, once characters are loaded. */
+const routeFace = (r) => {
+  const c = r.charId && people.chars ? people.chars[r.charId] : null;
+  return (c && c.image) || "";
+};
+
 function openDetail(id) {
   const g = state.games.find((x) => x.id === id);
   if (!g) return;
@@ -177,10 +185,11 @@ function openDetail(id) {
     `<button data-rate="${n}" class="${n <= (g.rating || 0) ? "on" : ""}" aria-label="${n} stars">★</button>`).join("");
   const routes = (g.routes || []).map((r, i) => `
     <div class="route">
+      <span class="route-face" data-face="${i}">${portraitHTML(routeFace(r), r.name)}</span>
       <div class="who"><b>${esc(r.name)}</b>${r.original ? `<span>${esc(r.original)}</span>` : ""}
         ${r.seiyuu ? `<small>CV: ${esc(r.seiyuu)}</small>` : ""}</div>
       <div class="seg">${Object.entries(LABELS.route).map(([s, l]) =>
-        `<button class="${s}" data-route="${i}" data-state="${s}" aria-pressed="${(r.state || "none") === s}">${l}</button>`).join("")}</div>
+        `<button class="${s}" data-route="${i}" data-state="${s}" aria-pressed="${routeState(r) === s}">${l}</button>`).join("")}</div>
     </div>`).join("");
 
   dlg.innerHTML = `
@@ -268,6 +277,16 @@ function openDetail(id) {
   if (!dlg.open) dlg.showModal();
   if (detailTab === "study") loadStudy(g);
   if (detailTab === "reading") loadReading(g);
+  // Portraits come from the fetched VNDB characters; fill them in without redrawing the open sheet
+  if (!people.chars && (g.routes || []).some((r) => r.charId)) {
+    loadPeople().then(() => {
+      if (!dlg.open) return;
+      $$(".route-face", dlg).forEach((el) => {
+        const r = (g.routes || [])[+el.dataset.face];
+        if (r && routeFace(r)) el.innerHTML = portraitHTML(routeFace(r), r.name);
+      });
+    });
+  }
 }
 
 // ---------- GameSentenceMiner: imported sentences ----------
