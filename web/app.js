@@ -1974,19 +1974,76 @@ function renderVAs(host) {
 const openGameFrom = (el) => { const b = el.closest("[data-game]"); if (b) { detailTab = "overview"; openDetail(b.dataset.game); } };
 const dateRange = (g) => `${g.startedOn || "?"} → ${g.finishedOn || "…"}`;
 
-VIEWS.timeline = {
-  render(host) {
-    const dated = state.games.filter((g) => inDiary(g) && (g.startedOn || g.finishedOn))
-      .sort((a, b) => (a.startedOn || a.finishedOn).localeCompare(b.startedOn || b.finishedOn));
-    const undated = state.games.filter((g) => inDiary(g) && !g.startedOn && !g.finishedOn).length;
-    const byYear = new Map();
-    for (const g of dated) {
-      const y = (g.startedOn || g.finishedOn).slice(0, 4);
-      if (!byYear.has(y)) byYear.set(y, []);
-      byYear.get(y).push(g);
-    }
-    host.innerHTML = `<h2 class="page-h">Timeline</h2>
-      ${dated.length ? `<div class="trail">${[...byYear].map(([y, gs]) => `
+// ---------- Timeline: reading calendar (days played, from imported GSM sentences) + the dated-games trail ----------
+
+const tlUI = { mode: "calendar", month: "", day: "", days: null };
+const pad2 = (n) => String(n).padStart(2, "0");
+const shortChars = (n) => n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+const monthLabel = (m) => new Date(+m.slice(0, 4), +m.slice(5) - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+const shiftMonth = (m, by) => { const d = new Date(+m.slice(0, 4), +m.slice(5) - 1 + by, 1); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`; };
+const gameById = (id) => state.games.find((g) => g.id === id);
+
+function calendarHTML() {
+  const byDate = new Map((tlUI.days || []).map((d) => [d.date, d.items]));
+  const [y, m] = [+tlUI.month.slice(0, 4), +tlUI.month.slice(5)];
+  const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7; // weeks start on Monday
+  const count = new Date(y, m, 0).getDate();
+  const keys = Array.from({ length: count }, (_, i) => `${tlUI.month}-${pad2(i + 1)}`);
+  const sum = (items) => items.reduce((t, i) => ({ chars: t.chars + i.chars, lines: t.lines + i.lines, seconds: t.seconds + i.seconds }), { chars: 0, lines: 0, seconds: 0 });
+  const played = keys.filter((k) => byDate.has(k));
+  const month = sum(played.flatMap((k) => byDate.get(k)));
+  const maxChars = Math.max(1, ...played.map((k) => sum(byDate.get(k)).chars));
+  // Games started / finished on a day (from the Log tab) get a small marker
+  const marks = new Map();
+  for (const g of state.games) {
+    if (g.startedOn) marks.set(g.startedOn, [...(marks.get(g.startedOn) || []), `▶ started ${g.title}`]);
+    if (g.finishedOn) marks.set(g.finishedOn, [...(marks.get(g.finishedOn) || []), `✓ finished ${g.title}`]);
+  }
+  const today = `${new Date().getFullYear()}-${pad2(new Date().getMonth() + 1)}-${pad2(new Date().getDate())}`;
+  const cell = (k, i) => {
+    const items = byDate.get(k) || [];
+    const t = sum(items);
+    const covers = items.slice(0, 3).map((it) => { const g = gameById(it.gameId); return g ? `<span class="mini-cover" title="${esc(g.title)}">${coverHTML(g)}</span>` : ""; }).join("");
+    const mk = marks.get(k);
+    return `<button type="button" class="cal-day ${items.length ? "has" : ""} ${k === tlUI.day ? "sel" : ""} ${k === today ? "today" : ""}" data-day="${k}" style="--heat:${items.length ? Math.max(.15, t.chars / maxChars) : 0}">
+      <b>${i + 1}</b>${mk ? `<span class="cal-mark" title="${esc(mk.join("\n"))}">${mk[0].startsWith("✓") ? "✓" : "▶"}</span>` : ""}
+      ${items.length ? `<span class="cal-covers">${covers}${items.length > 3 ? `<small>+${items.length - 3}</small>` : ""}</span>
+        <small>${shortChars(t.chars)}${t.seconds ? ` · ${gsmHours(t.seconds)}` : ""}</small>` : ""}</button>`;
+  };
+  const items = byDate.get(tlUI.day) || [];
+  const dt = sum(items);
+  const panel = tlUI.day ? `<section class="cal-panel">
+      <h3>${new Date(tlUI.day + "T12:00").toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+        ${items.length ? `<small>${fmt(dt.chars)} characters · ${fmt(dt.lines)} sentences${dt.seconds ? ` · ${gsmHours(dt.seconds)}` : ""}</small>` : ""}</h3>
+      ${items.map((it) => { const g = gameById(it.gameId); return g ? `<article class="trail-item" tabindex="0" data-game="${esc(g.id)}">
+        <div class="trail-cover">${coverHTML(g)}</div>
+        <div><b>${esc(g.title)}</b><small>${fmt(it.chars)} characters · ${fmt(it.lines)} sentences${it.seconds ? ` · ${gsmHours(it.seconds)}` : ""}${it.seconds > 60 ? ` · ${fmt(Math.round(it.chars / (it.seconds / 3600)))}/h` : ""}</small></div></article>` : ""; }).join("")
+        || `<p class="muted">No reading logged this day.</p>`}
+      ${(marks.get(tlUI.day) || []).map((t) => `<p class="muted">${esc(t)}</p>`).join("")}
+    </section>` : "";
+  return `<div class="cal-head">
+      <button type="button" class="ghost" data-cal="-1" aria-label="Previous month">←</button>
+      <h3>${esc(monthLabel(tlUI.month))}</h3>
+      <button type="button" class="ghost" data-cal="1" aria-label="Next month">→</button>
+      <button type="button" class="ghost" data-cal="today">Today</button>
+      <small class="muted spacer">${played.length ? `${played.length} day${played.length === 1 ? "" : "s"} played · ${fmt(month.chars)} characters${month.seconds ? ` · ${gsmHours(month.seconds)}` : ""}` : "Nothing logged this month"}</small>
+    </div>
+    <div class="cal-grid">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => `<span class="cal-dow">${d}</span>`).join("")}
+      ${Array.from({ length: lead }, () => `<span></span>`).join("")}${keys.map(cell).join("")}</div>
+    ${panel}`;
+}
+
+function trailHTML() {
+  const dated = state.games.filter((g) => inDiary(g) && (g.startedOn || g.finishedOn))
+    .sort((a, b) => (a.startedOn || a.finishedOn).localeCompare(b.startedOn || b.finishedOn));
+  const undated = state.games.filter((g) => inDiary(g) && !g.startedOn && !g.finishedOn).length;
+  const byYear = new Map();
+  for (const g of dated) {
+    const y = (g.startedOn || g.finishedOn).slice(0, 4);
+    if (!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(g);
+  }
+  return `${dated.length ? `<div class="trail">${[...byYear].map(([y, gs]) => `
         <section class="trail-year"><h3>${esc(y)} <small>${gs.length} game${gs.length === 1 ? "" : "s"}</small></h3>
           ${gs.map((g, i) => `
           <article class="trail-item ${i % 2 ? "alt" : ""}" tabindex="0" data-game="${esc(g.id)}" title="${esc(dateRange(g))}">
@@ -1997,7 +2054,35 @@ VIEWS.timeline = {
           </article>`).join("")}
         </section>`).join("")}</div>` : `<p class="empty">No dated games yet. Add start and finish dates in a game's Log tab.</p>`}
       ${undated ? `<p class="muted">${undated} diary game${undated === 1 ? " has" : "s have"} no dates yet, so ${undated === 1 ? "it isn't" : "they aren't"} on the trail.</p>` : ""}`;
-    host.onclick = (e) => openGameFrom(e.target);
+}
+
+VIEWS.timeline = {
+  async render(host, refetch = true) {
+    if (refetch || !tlUI.days) {
+      tlUI.days = await api("GET", "/api/gsm/days").catch(() => []);
+      if (!tlUI.month) {
+        const last = tlUI.days.at(-1)?.date || new Date().toISOString().slice(0, 10);
+        tlUI.month = last.slice(0, 7);
+        tlUI.day = tlUI.days.at(-1)?.date || "";
+      }
+    }
+    const empty = !tlUI.days.length;
+    host.innerHTML = `<h2 class="page-h">Timeline</h2>
+      <div class="tabs">${[["calendar", "Calendar"], ["trail", "Trail"]].map(([k, l]) =>
+        `<button type="button" data-tlmode="${k}" aria-pressed="${tlUI.mode === k}">${l}</button>`).join("")}</div>
+      ${tlUI.mode === "trail" ? trailHTML() : `${empty ? `<p class="muted">No reading logged yet. Use <b>Import from GSM</b> in the side menu to bring in your sentences, and the days you played will show up here.</p>` : ""}${calendarHTML()}`}`;
+    const again = () => VIEWS.timeline.render(host, false);
+    host.onclick = (e) => {
+      const t = e.target.closest("button");
+      if (t?.dataset.tlmode) { tlUI.mode = t.dataset.tlmode; return again(); }
+      if (t?.dataset.cal) {
+        if (t.dataset.cal === "today") { const n = new Date(); tlUI.month = `${n.getFullYear()}-${pad2(n.getMonth() + 1)}`; tlUI.day = `${tlUI.month}-${pad2(n.getDate())}`; }
+        else tlUI.month = shiftMonth(tlUI.month, +t.dataset.cal);
+        return again();
+      }
+      if (t?.dataset.day) { tlUI.day = t.dataset.day; return again(); }
+      openGameFrom(e.target);
+    };
     host.onkeydown = (e) => { if (e.key === "Enter") openGameFrom(e.target); };
   },
 };

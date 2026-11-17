@@ -245,6 +245,7 @@ def gsm_store():
         CREATE TABLE IF NOT EXISTS lines (id TEXT PRIMARY KEY, game_id TEXT, gsm_game_id TEXT, ts REAL, text TEXT);
         CREATE INDEX IF NOT EXISTS lines_game ON lines (game_id, ts);
         CREATE TABLE IF NOT EXISTS stats (gsm_game_id TEXT PRIMARY KEY, seconds REAL, cards INTEGER, days INTEGER);
+        CREATE TABLE IF NOT EXISTS daily (gsm_game_id TEXT, date TEXT, seconds REAL, PRIMARY KEY (gsm_game_id, date));
     """)
     return db
 
@@ -323,10 +324,46 @@ def gsm_import(choices):
                                            COALESCE(SUM(CAST(total_cards_mined AS INTEGER)), 0) c, COUNT(*) d
                                     FROM game_daily_rollup WHERE game_id = ?""", (gsm_id,)).fetchone()
                 store.execute("INSERT OR REPLACE INTO stats VALUES (?,?,?,?)", (gsm_id, st["s"], st["c"], st["d"]))
+                store.execute("DELETE FROM daily WHERE gsm_game_id = ?", (gsm_id,))
+                store.executemany("INSERT INTO daily VALUES (?,?,?) ON CONFLICT DO UPDATE SET seconds = seconds + excluded.seconds",
+                                  [(gsm_id, r["date"], r["s"]) for r in src.execute(
+                                      "SELECT date, SUM(CAST(total_reading_time_seconds AS REAL)) s FROM game_daily_rollup WHERE game_id = ? GROUP BY date", (gsm_id,))])
     finally:
         src.close()
         store.close()
     return {"added": added, "linked": sum(1 for v in links.values() if v)}
+
+
+IDLE_CAP = 180  # seconds: a longer gap between two sentences isn't counted as reading time
+
+
+def gsm_days():
+    """Per day, per library game: sentences, characters and reading time (GSM's own daily figure where it has one,
+    otherwise estimated from the gaps between sentences)."""
+    store = gsm_store()
+    try:
+        rows = store.execute("SELECT ts, game_id, gsm_game_id, LENGTH(text) n FROM lines ORDER BY gsm_game_id, ts").fetchall()
+        rollup = {(r["gsm_game_id"], r["date"]): r["seconds"] for r in store.execute("SELECT * FROM daily")}
+    finally:
+        store.close()
+    acc = {}      # (date, gsm game) -> [library game, lines, chars, estimated seconds]
+    prev = (None, None)
+    for r in rows:
+        day = time.strftime("%Y-%m-%d", time.localtime(r["ts"]))
+        a = acc.setdefault((day, r["gsm_game_id"]), [r["game_id"], 0, 0, 0.0])
+        a[1] += 1
+        a[2] += r["n"]
+        if prev[0] == r["gsm_game_id"] and prev[2] == day:
+            a[3] += min(r["ts"] - prev[1], IDLE_CAP)
+        prev = (r["gsm_game_id"], r["ts"], day)
+    days = {}
+    for (day, gsm_id), (lib_id, lines, chars, est) in acc.items():
+        secs = rollup.get((gsm_id, day), est)
+        item = days.setdefault(day, {}).setdefault(lib_id, {"gameId": lib_id, "lines": 0, "chars": 0, "seconds": 0.0})
+        item["lines"] += lines
+        item["chars"] += chars
+        item["seconds"] += secs
+    return [{"date": d, "items": sorted(v.values(), key=lambda i: -i["chars"])} for d, v in sorted(days.items())]
 
 
 def gsm_game_log(lib_id, offset=0, query=""):
@@ -1426,6 +1463,8 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/jiten/(deck|vocab)/(\d+)", path)
             if m:
                 return self.send_json((jiten_deck if m.group(1) == "deck" else jiten_vocab)(m.group(2)))
+            if path == "/api/gsm/days":
+                return self.send_json(gsm_days())
             if path == "/api/gsm/games":
                 return self.send_json(gsm_games())
             m = re.fullmatch(r"/api/gsm/log/([\w-]+)", path)
