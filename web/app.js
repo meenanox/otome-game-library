@@ -1208,6 +1208,73 @@ async function openScan() {
   }
 }
 
+const folderAdd = { path: "", each: false };
+
+function openFolder() {
+  startImport("folder", "Add games from a folder", "");
+  renderFolderStart();
+}
+
+function renderFolderStart(note = "") {
+  $("#itchBody").innerHTML = `${folderToolsHTML()}
+    <p class="muted">${esc(note) || "Pick a game's folder, a folder full of game folders, or your Steam library. The launch file (.exe, or Steam) is detected for you."}</p>`;
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Cancel</button>`;
+  bindFolderTools();
+}
+
+function folderToolsHTML() {
+  return `<div class="itch-tools folder-tools">
+    <input type="text" id="folderPath" placeholder="C:\\Games\\My Game   (or a folder of games)" value="${esc(folderAdd.path)}" spellcheck="false">
+    <button type="button" class="ghost" id="folderBrowse">Browse…</button>
+    <button type="button" class="primary" id="folderDetect">Detect</button>
+    <button type="button" class="ghost" id="folderSteam" title="Installed games from all your Steam libraries">Steam library</button>
+    <label class="inline" title="Treat every subfolder as its own game"><input type="checkbox" id="folderEach" ${folderAdd.each ? "checked" : ""}> Each subfolder is a game</label>
+  </div>`;
+}
+
+function bindFolderTools() {
+  $("#folderPath").oninput = (e) => { folderAdd.path = e.target.value; };
+  $("#folderPath").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); detectFolder(); } };
+  $("#folderEach").onchange = (e) => { folderAdd.each = e.target.checked; };
+  $("#folderDetect").onclick = () => detectFolder();
+  $("#folderSteam").onclick = () => detectFolder(true);
+  $("#folderBrowse").onclick = async () => {
+    const btn = $("#folderBrowse");
+    btn.disabled = true;
+    try {
+      const { path } = await api("POST", "/api/folder/browse", {});
+      if (path) { folderAdd.path = path; $("#folderPath").value = path; detectFolder(); }
+    } catch (e) {
+      toast(e.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
+async function detectFolder(steam = false) {
+  if (!steam && !folderAdd.path.trim()) { toast("Choose or paste a folder first", "error"); return; }
+  itch.selected.clear();
+  $("#itchBody").innerHTML = `${folderToolsHTML()}<p class="muted">Looking for games…</p>`;
+  bindFolderTools();
+  try {
+    const q = new URLSearchParams(steam ? { steam: "1" } : { path: folderAdd.path.trim(), mode: folderAdd.each ? "each" : "auto" });
+    const res = await api("GET", `/api/folder/detect?${q}`);
+    itch.errors = res.errors;
+    itch.items = res.items.map((it) => ({
+      ...it, id: it.key, cover: "", url: "", developer: "",
+      classification: it.source === "steam" ? "steam" : "windows",
+    }));
+    itch.type = "all";
+    if (!itch.items.length) { renderFolderStart(res.errors[0] || "Nothing launchable found there."); return; }
+    // everything new starts ticked: this is the "add them all" flow
+    itch.items.filter((it) => !it.imported && !it.ignored).forEach((it) => itch.selected.add(it.id));
+    renderItchPick();
+  } catch (e) {
+    renderFolderStart(e.message);
+  }
+}
+
 async function openItch() {
   const dlg = $("#itchDialog");
   if (!state.settings.itchKeySet) {
@@ -1238,6 +1305,7 @@ function itchVisible() {
 function renderItchPick() {
   const types = [...new Set(itch.items.map((it) => it.classification))].sort();
   $("#itchBody").innerHTML = `
+    ${itch.source === "folder" ? folderToolsHTML() : ""}
     <div class="itch-tools">
       <input type="search" id="itchQ" placeholder="Search ${itch.items.length} items…" value="${esc(itch.q)}">
       <select id="itchType">
@@ -1255,6 +1323,7 @@ function renderItchPick() {
   itch.type = $("#itchType").value;
   renderItchList();
 
+  if (itch.source === "folder") bindFolderTools();
   $("#itchQ").oninput = (e) => { itch.q = e.target.value; renderItchList(); };
   $("#itchType").onchange = (e) => { itch.type = e.target.value; renderItchList(); };
   $("#itchShowImported").onchange = (e) => { itch.showImported = e.target.checked; renderItchList(); };
@@ -1262,6 +1331,10 @@ function renderItchPick() {
   $("#itchAll").onclick = () => { itchVisible().filter((it) => !it.imported && !it.ignored).forEach((it) => itch.selected.add(it.id)); renderItchList(); };
   $("#itchNone").onclick = () => { itch.selected.clear(); renderItchList(); };
   $("#itchList").onchange = (e) => {
+    if (e.target.dataset.exe) {
+      itch.items.find((x) => x.id === e.target.dataset.exe).exePath = e.target.value;
+      return;
+    }
     const id = e.target.dataset.itch;
     if (e.target.checked) itch.selected.add(id); else itch.selected.delete(id);
     renderItchPickFoot();
@@ -1271,16 +1344,26 @@ function renderItchPick() {
 function renderItchList() {
   const list = itchVisible();
   $("#itchList").innerHTML = list.map((it) => `
-    <label class="itch-row ${it.imported || it.ignored ? "done" : ""} ${itch.source === "scan" ? "has-act" : ""}" title="${esc(it.location || it.url || "")}">
+    <label class="itch-row ${it.imported || it.ignored ? "done" : ""} ${itch.source === "scan" ? "has-act" : ""} ${itch.source === "folder" && !it.imported && it.candidates.length > 1 ? "has-exe" : ""}" title="${esc(it.location || it.url || "")}">
       <input type="checkbox" data-itch="${esc(it.id)}" ${itch.selected.has(it.id) ? "checked" : ""} ${it.imported || it.ignored ? "disabled" : ""}>
       ${thumb(it.cover)}
       <span><b>${esc(it.title)}</b>
         <small>${esc([it.developer, it.classification.replace("_", " "),
-          itch.source === "itch" ? (it.purchased ? "purchased" : "bundle / claim") : "…\\" + it.location.split(/[\\/]/).slice(-2).join("\\"),
+          itch.source === "itch" ? (it.purchased ? "purchased" : "bundle / claim")
+            : itch.source === "folder" ? it.folder : "…\\" + it.location.split(/[\\/]/).slice(-2).join("\\"),
           it.imported ? "already in library" : "", it.ignored ? "ignored" : ""].filter(Boolean).join(" · "))}</small></span>
+      ${itch.source === "folder" && it.candidates.length > 1 && !it.imported ? exeSelectHTML(it) : ""}
       ${itch.source === "scan" && !it.imported ? `<button type="button" class="link" data-ignore-scan="${esc(it.id)}">${it.ignored ? "Restore" : "Ignore"}</button>` : ""}
     </label>`).join("") || `<p class="muted">Nothing matches.</p>`;
   renderItchPickFoot();
+}
+
+const sizeText = (b) => b >= 1 << 20 ? `${Math.round(b / (1 << 20))} MB` : b ? `${Math.max(1, Math.round(b / 1024))} KB` : "";
+
+function exeSelectHTML(it) {
+  return `<select data-exe="${esc(it.id)}" class="exe-pick" aria-label="Launch file for ${esc(it.title)}" title="Which file starts this game">
+    ${it.candidates.map((c) => `<option value="${esc(c.path)}" ${c.path === it.exePath ? "selected" : ""}>${esc(c.rel + (c.size ? ` (${sizeText(c.size)})` : ""))}</option>`).join("")}
+  </select>`;
 }
 
 function renderItchPickFoot() {
@@ -1346,7 +1429,7 @@ async function startItchMatch() {
   itch.rows = itch.items.filter((it) => itch.selected.has(it.id))
     .map((item, i) => ({ i, item, match: null, use: false, category: "" }));
   $("#itchBody").innerHTML = `
-    <p class="muted">Ticked matches fill in Japanese title, brand, routes and seiyuu from VNDB. Untick a wrong one to import the ${itch.source === "scan" ? "file's own title" : "itch.io details"} only.</p>
+    <p class="muted">Ticked matches fill in Japanese title, brand, routes and seiyuu from VNDB. Untick a wrong one to import the ${itch.source === "itch" ? "itch.io details" : itch.source === "folder" ? "folder's name" : "file's own title"} only.</p>
     <div class="itch-list" id="matchList">${itch.rows.map(renderMatchRow).join("")}</div>`;
   $("#matchList").onchange = (e) => {
     const t = e.target;
@@ -1418,7 +1501,9 @@ async function importItchRows() {
       const vids = rel && rel.vns.length > 1 ? rel.vns.map((v) => v.id) : row.use && row.match?.vn ? [row.match.vn.id] : [null];
       const where = itch.source === "scan"
         ? { platform: it.platform, format: "emulated", emulator: it.emulator, romPath: it.romPath, serial: it.serial, source: "scan" }
-        : { platform: "pc", format: "pc", exePath: "", itchGameId: it.itchGameId, itchUrl: it.url, source: "itch" };
+        : itch.source === "folder"
+          ? { platform: "pc", format: "pc", exePath: it.exePath, installFolder: it.folder, source: it.source, ...(it.steamAppId ? { steamAppId: it.steamAppId } : {}) }
+          : { platform: "pc", format: "pc", exePath: "", itchGameId: it.itchGameId, itchUrl: it.url, source: "itch" };
       for (const vid of vids) {
         let game = { title: it.title, brand: it.developer, cover: it.cover };
         if (vid) {
@@ -2410,6 +2495,8 @@ $("#addBtn").onclick = () => openEdit(null);
 $("#settingsBtn").onclick = openSettings;
 $("#itchBtn").onclick = openItch;
 $("#scanBtn").onclick = openScan;
+$("#folderBtn").onclick = openFolder;
+$("#addFolderBtn").onclick = openFolder;
 $("#checkBtn").onclick = openCheck;
 $("#dlcBtn").onclick = openDlc;
 $("#search").addEventListener("input", (e) => { state.filter.q = e.target.value; render(); });

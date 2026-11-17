@@ -545,3 +545,8 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); tex
 .itch-row.has-act { grid-template-columns: auto 48px 1fr auto; }
 .itch-row.done .link { opacity: 1; }
 .check-result .link { margin-top: 2px; }
+
+/* Add games from a folder */
+.folder-tools input[type="text"] { flex: 1 1 260px; width: auto; }
+.itch-row.has-exe { grid-template-columns: auto 48px 1fr minmax(120px, 220px); }
+.itch-row .exe-pick { max-width: 220px; font-size: .8rem; }
