@@ -555,6 +555,201 @@ def scan_folders():
     return {"items": found, "errors": errors[:20]}
 
 
+# ---------- add games from a folder (Windows / Steam) ----------
+
+STEAM_URL = "steam://rungameid/"
+STEAM_SKIP_IDS = {"228980"}  # Steamworks Common Redistributables
+STEAM_SKIP_NAMES = ("proton", "steam linux runtime", "steamworks common")
+JUNK_DIRS = {"_commonredist", "commonredist", "redist", "redistributable", "redistributables", "directx", "dotnet",
+             "vcredist", "__installer", "installer", "support", "engine", "lib", "mono", "monobleedingedge",
+             "crashpad", "_redist", "__macosx", ".git", "node_modules"}
+JUNK_EXE = re.compile(r"unins|uninstall|vc_?redist|dxsetup|dxwebsetup|dotnet|ndp\d|oalinst|physx|crash|"
+                      r"notification_helper|webview2|cefsubprocess|7z|d3dx|vulkan|^python|^node|^ffmpeg|^lib", re.I)
+SOFT_JUNK_EXE = re.compile(r"setup|install|config|update|patch|helper|server|editor|benchmark", re.I)
+MAX_FOLDER_ENTRIES = 6000
+MAX_EXE_DEPTH = 3
+
+
+def steam_library_dirs():
+    """steamapps folders of every Steam library on this PC (registry, default path, libraryfolders.vdf)."""
+    roots = []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            roots.append(Path(winreg.QueryValueEx(key, "SteamPath")[0]))
+    except (ImportError, OSError):
+        pass
+    for var in ("ProgramFiles(x86)", "ProgramFiles"):
+        if os.environ.get(var):
+            roots.append(Path(os.environ[var]) / "Steam")
+    out = []
+    for root in roots:
+        vdf = root / "steamapps" / "libraryfolders.vdf"
+        libs = [root]
+        try:
+            libs += [Path(p.replace("\\\\", "\\")) for p in re.findall(r'"path"\s+"([^"]+)"', vdf.read_text("utf-8", "replace"))]
+        except OSError:
+            pass
+        for lib in libs:
+            d = lib / "steamapps"
+            if d.is_dir() and d not in out:
+                out.append(d)
+    return out
+
+
+def steam_manifests(steamapps):
+    """Installed Steam games in one steamapps folder: [{appid, name, folder}]."""
+    games = []
+    try:
+        files = sorted(steamapps.glob("appmanifest_*.acf"))
+    except OSError:
+        return games
+    for f in files:
+        try:
+            text = f.read_text("utf-8", "replace")
+        except OSError:
+            continue
+
+        def field(k):
+            m = re.search(r'"%s"\s+"([^"]*)"' % k, text)
+            return m.group(1) if m else ""
+
+        appid, name, installdir = field("appid"), field("name"), field("installdir")
+        if not (appid and installdir) or appid in STEAM_SKIP_IDS or name.lower().startswith(STEAM_SKIP_NAMES):
+            continue
+        games.append({"appid": appid, "name": name or installdir, "folder": steamapps / "common" / installdir})
+    return games
+
+
+def find_executables(folder, title=""):
+    """Launchable files in a game folder, best guess first. Skips uninstallers, redistributables and crash handlers."""
+    found, seen = [], 0
+    want = normalise(title or folder.name)
+    for dirpath, dirnames, filenames in os.walk(folder):
+        here = Path(dirpath)
+        depth = len(here.relative_to(folder).parts)
+        dirnames[:] = [] if depth + 1 >= MAX_EXE_DEPTH else [d for d in dirnames if d.lower() not in JUNK_DIRS]
+        for name in filenames:
+            seen += 1
+            stem, ext = os.path.splitext(name)
+            ext = ext.lower()
+            if ext != ".exe" and not (ext in (".lnk", ".bat") and depth == 0):
+                continue
+            if JUNK_EXE.search(stem):
+                continue
+            path = here / name
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            score = 100 - 25 * depth + (10 if size > 5 << 20 else 0) + (10 if size > 50 << 20 else 0)
+            n = normalise(stem)
+            if n and want and (n in want or want in n):
+                score += 40
+            elif n == "game":
+                score += 20  # RPG Maker and many other engines
+            if "launcher" in stem.lower():
+                score -= 5
+            if "shipping" in stem.lower():
+                score -= 10
+            if SOFT_JUNK_EXE.search(stem):
+                score -= 40
+            if ext != ".exe":
+                score -= 15
+            found.append({"path": str(path), "rel": str(path.relative_to(folder)), "size": size, "score": score})
+        if seen > MAX_FOLDER_ENTRIES:
+            break
+    found.sort(key=lambda c: (-c["score"], c["rel"].lower()))
+    return found[:8]
+
+
+def launch_key(path):
+    return path if path.lower().startswith(STEAM_URL) else os.path.normcase(os.path.normpath(path))
+
+
+def detect_folder(raw, mode="auto", steam=False):
+    """Work out the game(s) in a folder and how to launch each: a Steam library, one game folder,
+    or a folder of game folders. Returns {items, errors}; each item lists its launch candidates, best first."""
+    known = set()
+    for g in load_games():
+        for p in (g.get("exePath"), g.get("installFolder")):
+            if p:
+                known.add(launch_key(p))
+    ignored = load_ignored()["scan"]
+    items, errors = [], []
+
+    def add(title, folder, cands, appid=""):
+        if appid:
+            cands = [{"path": STEAM_URL + appid, "rel": "Launch through Steam", "size": 0, "score": 999}] + cands
+        if not cands:
+            return
+        keys = {launch_key(c["path"]) for c in cands} | {launch_key(str(folder))}
+        items.append({
+            "key": str(folder), "title": title, "folder": str(folder), "candidates": cands,
+            "exePath": cands[0]["path"], "steamAppId": appid, "platform": "pc",
+            "source": "steam" if appid else "folder",
+            "imported": bool(keys & known), "ignored": rom_key(str(folder)) in ignored,
+        })
+
+    def steam_dir(steamapps):
+        for m in steam_manifests(steamapps):
+            folder = m["folder"]
+            add(m["name"], folder, find_executables(folder, m["name"]) if folder.is_dir() else [], m["appid"])
+
+    if steam:
+        dirs = steam_library_dirs()
+        if not dirs:
+            raise ValueError("Couldn't find a Steam install on this PC. Pick a game folder instead.")
+        for d in dirs:
+            steam_dir(d)
+    else:
+        root = Path(os.path.expandvars((raw or "").strip().strip('"')))
+        if not root.is_dir():
+            raise ValueError(f"Folder not found: {raw}")
+        hit = None
+        if root.parent.name.lower() == "common" and root.parent.parent.is_dir():
+            hit = next((m for m in steam_manifests(root.parent.parent) if m["folder"].name.lower() == root.name.lower()), None)
+        if root.name.lower() == "steamapps" or (root / "steamapps").is_dir():
+            steam_dir(root if root.name.lower() == "steamapps" else root / "steamapps")
+        elif hit:
+            add(hit["name"], root, find_executables(root, hit["name"]), hit["appid"])
+        else:
+            try:
+                children = sorted(p for p in root.iterdir() if p.is_dir() and p.name.lower() not in JUNK_DIRS)
+            except OSError as e:
+                raise ValueError(f"Couldn't read {root}: {e}")
+            here = find_executables(root)
+            top = [c for c in here if Path(c["path"]).parent == root]
+            per_child = None
+            if mode == "each" or (mode == "auto" and not top and len(children) > 1):
+                per_child = [(p, find_executables(p)) for p in children[:300]]
+                if mode == "auto" and sum(1 for _, c in per_child if c) < 2:
+                    per_child = None  # one real game with its files in a subfolder
+            if per_child is not None:
+                for p, cands in per_child:
+                    add(clean_file_title(p.name), p, cands)
+            else:
+                add(clean_file_title(root.name), root, here)
+        if not items:
+            errors.append("No launchable files (.exe) found in that folder.")
+    items.sort(key=lambda x: x["title"].casefold())
+    return {"items": items, "errors": errors}
+
+
+def pick_folder():
+    """Open Windows' own folder picker on this PC and return the chosen path ('' if cancelled)."""
+    code = ("import tkinter as t, tkinter.filedialog as f\nr=t.Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
+            "print(f.askdirectory(title='Choose a game folder'))")
+    try:
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError("Couldn't open the folder picker. Paste the folder path instead.")
+    if out.returncode:
+        raise ValueError("Couldn't open the folder picker. Paste the folder path instead.")
+    path = out.stdout.strip()
+    return {"path": os.path.normpath(path) if path else ""}
+
+
 # ---------- Switch DLC / updates ----------
 
 SWITCH_TITLE_ID = re.compile(r"(?<![0-9A-Fa-f])(01[0-9A-Fa-f]{14})(?![0-9A-Fa-f])")
@@ -1331,6 +1526,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(check_dlc())
             if path == "/api/scan":
                 return self.send_json(scan_folders())
+            if path == "/api/folder/detect":
+                return self.send_json(detect_folder(query.get("path", [""])[0], query.get("mode", ["auto"])[0],
+                                                    query.get("steam", [""])[0] == "1"))
             if path == "/api/itch/owned":
                 key = load_settings().get("itchApiKey")
                 if not key:
@@ -1361,6 +1559,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(game, 201)
             if path == "/api/library/reset":
                 return self.send_json(reset_library(self.read_body().get("mode")))
+            if path == "/api/folder/browse":
+                return self.send_json(pick_folder())
             if path == "/api/ignore":
                 b = self.read_body()
                 return self.send_json(set_ignored(b.get("list"), b.get("path") or "", b.get("title"), b.get("ignore") is not False))

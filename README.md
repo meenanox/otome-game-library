@@ -23,6 +23,8 @@ Launch targets: a PC `.exe` / `.lnk` / `steam://` URL, or an emulator + game fil
 click **itch.io**. Tick games, match them on VNDB (exact store link → same title → possible guess),
 pick categories, import. The key stays in `data/settings.json` and is never sent to the page.
 
+**Add from folder (Windows / Steam games):** click **Add from folder**, then **Browse...** to a game's folder, a folder of game folders, or press **Steam library**. It finds the launch file for you (skipping uninstallers, redistributables and crash handlers), or launches through Steam (`steam://rungameid/<id>`) for Steam installs, which are recognised from their `appmanifest` files. Pick a different file from the dropdown if the guess is wrong, then match on VNDB and import like the other imports.
+
 **Scan folders (emulated games):** list game folders under each emulator in Settings, then click
 **Scan folders**. Finds PSP ISO/CSO/CHD/EBOOT.PBP, Switch NSP/XCI, and Vita3K installed apps
 (`ux0\app\<TITLE_ID>`). PSP ISOs, EBOOTs and Vita apps carry their real title and serial, and VNDB
