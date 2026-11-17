@@ -33,6 +33,8 @@ When a file matches a game already on your VNDB list (imported with the list syn
 to that entry instead of creating a duplicate. Bundles link every game they contain. Rows that aren't on your
 list or didn't match are only reported; use **Scan folders** to import those.
 
+**Import from GSM (GameSentenceMiner):** click **Import from GSM** to copy the sentences GSM has logged into the library. Each GSM game is matched to a library game by VNDB id, then exact title; anything else you pick by hand or skip. GSM's database (`%APPDATA%\GameSentenceMiner\gsm.db`, or `gsmDbPath` in `data/settings.json`) is opened read-only and never changed. Sentences are stored in `data/gsm_lines.db`; importing again adds only new lines. Each game's **Reading** tab shows characters, sentences, reading time, speed and a searchable sentence list.
+
 **Japanese study (Jiten):** each game has a **Study** tab, and the **Study** button in the top bar opens a library-wide
 view. Games match on [jiten.moe](https://jiten.moe) by VNDB id (exact), then exact title; anything fuzzy is offered as
 a pick-list, never linked silently. The card shows a difficulty pill beside the title. Stats are stored in `games.json`

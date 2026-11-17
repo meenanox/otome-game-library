@@ -193,9 +193,9 @@ function openDetail(id) {
             `<option value="${v}" ${g.status === v ? "selected" : ""}>${l}</option>`).join("")}</select>
           <span class="stars">${stars}</span>
         </div>
-        <div class="tabs">${[["overview", "Overview"], ["log", "Log"], ["study", "Study"]].map(([k, l]) =>
+        <div class="tabs">${[["overview", "Overview"], ["log", "Log"], ["study", "Study"], ["reading", "Reading"]].map(([k, l]) =>
           `<button data-tab="${k}" aria-pressed="${detailTab === k}">${l}</button>`).join("")}</div>
-        ${detailTab === "study" ? `<div id="studyPane">${studyHTML(g)}</div>` : detailTab === "log" ? logHTML(g) : `
+        ${detailTab === "study" ? `<div id="studyPane">${studyHTML(g)}</div>` : detailTab === "reading" ? `<div id="readingPane"><p class="muted">Loading…</p></div>` : detailTab === "log" ? logHTML(g) : `
         ${g.notes ? `<div class="notes">${esc(g.notes)}</div>` : ""}
         ${g.description ? `<p class="desc">${esc(g.description)}</p>` : ""}
         <section class="routes">
@@ -264,6 +264,107 @@ function openDetail(id) {
   bindLog(g, dlg);
   if (!dlg.open) dlg.showModal();
   if (detailTab === "study") loadStudy(g);
+  if (detailTab === "reading") loadReading(g);
+}
+
+// ---------- GameSentenceMiner: imported sentences ----------
+
+const gsmDate = (ts) => ts ? new Date(ts * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
+const gsmHours = (s) => s >= 3600 ? `${(s / 3600).toFixed(1)} h` : `${Math.round(s / 60)} min`;
+const gsmState = { rows: [] };
+
+async function openGsm() {
+  startImport("gsm", "Import from GameSentenceMiner", "Reading GSM's database…");
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button>`;
+  try {
+    gsmState.rows = await api("GET", "/api/gsm/games");
+    renderGsm();
+  } catch (e) {
+    $("#itchBody").innerHTML = `<p>${esc(e.message)}</p>`;
+  }
+}
+
+function gsmOptions(selected) {
+  const games = [...state.games].sort((a, b) => a.title.localeCompare(b.title));
+  return `<option value="">Don't import</option>` + games.map((g) =>
+    `<option value="${esc(g.id)}" ${g.id === selected ? "selected" : ""}>${esc(g.title)}</option>`).join("");
+}
+
+function renderGsm() {
+  const withLines = gsmState.rows.filter((r) => r.lines > 0);
+  const empty = gsmState.rows.length - withLines.length;
+  const total = withLines.reduce((n, r) => n + r.lines, 0);
+  const row = (r) => {
+    // Chosen link wins, then the app's suggestion; only exact VNDB / title matches are pre-filled.
+    const pick = r.decided ? r.linked : r.suggested;
+    const note = r.decided ? "" : r.suggested ? `<small class="muted">matched by ${r.suggestedBy === "vndb" ? "VNDB id" : "title"}</small>` : `<small class="muted">no match: pick a game or skip</small>`;
+    return `<div class="dlc-row">
+      <b>${esc(r.title)}</b>
+      <small>${fmt(r.lines)} lines · ${fmt(r.chars)} characters · ${gsmDate(r.first)} – ${gsmDate(r.last)}${r.imported ? ` · ${fmt(r.imported)} already imported` : ""}</small>
+      <select data-gsm="${esc(r.id)}" aria-label="Library game for ${esc(r.title)}">${gsmOptions(pick)}</select> ${note}
+    </div>`;
+  };
+  $("#itchBody").innerHTML = `
+    <p>GSM has <b>${fmt(total)}</b> logged sentences across ${withLines.length} games. Pick the library game for each one, then import. GSM's database is only read, never changed. Importing again later adds just the new lines.</p>
+    ${withLines.map(row).join("") || `<p class="muted">GSM has no logged sentences yet.</p>`}
+    ${empty ? `<p class="muted"><small>${empty} GSM games with no sentences are hidden.</small></p>` : ""}`;
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button><button type="button" class="primary" id="gsmGo">Import</button>`;
+}
+
+$("#itchDialog").addEventListener("click", async (e) => {
+  if (itch.source !== "gsm" || e.target.id !== "gsmGo") return;
+  const links = {};
+  $$("[data-gsm]", $("#itchBody")).forEach((s) => { links[s.dataset.gsm] = s.value || null; });
+  e.target.disabled = true;
+  e.target.textContent = "Importing…";
+  try {
+    const res = await api("POST", "/api/gsm/import", { links });
+    $("#itchDialog").close();
+    toast(res.added ? `Imported ${fmt(res.added)} new sentences` : "Already up to date");
+  } catch (err) {
+    e.target.disabled = false;
+    e.target.textContent = "Import";
+    toast(err.message, "error");
+  }
+});
+
+let readingQuery = "";
+
+async function loadReading(g, offset = 0) {
+  const pane = $("#readingPane");
+  if (!pane) return;
+  try {
+    const d = await api("GET", `/api/gsm/log/${encodeURIComponent(g.id)}?offset=${offset}&q=${encodeURIComponent(readingQuery)}`);
+    if (detailTab !== "reading" || !$("#readingPane")) return;
+    if (!d.linked || !d.lines) {
+      pane.innerHTML = `<p class="muted">${d.linked ? "No sentences imported for this game yet." : "No GameSentenceMiner sentences are linked to this game."} Use <b>Import from GSM</b> in the side menu.</p>`;
+      return;
+    }
+    const perHour = d.seconds > 0 ? Math.round(d.chars / (d.seconds / 3600)) : 0;
+    const items = d.items.map((i) => `<li><time>${new Date(i.ts * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time> ${esc(i.text)}</li>`).join("");
+    pane.innerHTML = `
+      <div class="stats">
+        <div class="stat"><span>Characters read</span><b>${fmt(d.chars)}</b></div>
+        <div class="stat"><span>Sentences</span><b>${fmt(d.lines)}</b></div>
+        <div class="stat"><span>Reading time</span><b>${d.seconds ? gsmHours(d.seconds) : "—"}</b></div>
+        <div class="stat"><span>Speed</span><b>${perHour ? `${fmt(perHour)}/h` : "—"}</b></div>
+        <div class="stat"><span>Days played</span><b>${fmt(d.days)}</b></div>
+        <div class="stat"><span>First – last</span><b>${gsmDate(d.first)} – ${gsmDate(d.last)}</b></div>
+      </div>
+      <input type="search" id="readingSearch" placeholder="Search sentences…" value="${esc(readingQuery)}" aria-label="Search sentences">
+      <p class="muted"><small>${fmt(d.total)} matching · showing ${fmt(offset + 1)}–${fmt(offset + d.items.length)}, newest first</small></p>
+      <ol class="reading-lines">${items || `<li class="muted">Nothing matches.</li>`}</ol>
+      <div class="detail-controls">
+        <button type="button" class="ghost" id="readingPrev" ${offset ? "" : "disabled"}>← Newer</button>
+        <button type="button" class="ghost" id="readingNext" ${offset + d.items.length < d.total ? "" : "disabled"}>Older →</button>
+      </div>`;
+    const search = $("#readingSearch");
+    search.onchange = () => { readingQuery = search.value.trim(); loadReading(g, 0); };
+    $("#readingPrev").onclick = () => loadReading(g, Math.max(0, offset - 100));
+    $("#readingNext").onclick = () => loadReading(g, offset + 100);
+  } catch (e) {
+    pane.innerHTML = `<p class="error">${esc(e.message)}</p>`;
+  }
 }
 
 // ---------- playthrough log (dates, hours, notes, flavour) ----------
@@ -2412,6 +2513,26 @@ $("#itchBtn").onclick = openItch;
 $("#scanBtn").onclick = openScan;
 $("#checkBtn").onclick = openCheck;
 $("#dlcBtn").onclick = openDlc;
+$("#gsmBtn").onclick = openGsm;
+$("#restartBtn").onclick = async () => {
+  if (!confirm("Restart the library? The page reloads in a few seconds.")) return;
+  try {
+    await api("POST", "/api/restart");
+  } catch (e) {
+    return toast(e.message, "error");
+  }
+  toast("Restarting…");
+  // Wait for the old server to go and the new one to answer, then reload
+  let down = false;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      await fetch("/api/settings", { cache: "no-store" });
+      if (down || i >= 8) return location.reload(); // up again (or never seen down: it restarted fast)
+    } catch { down = true; }
+  }
+  toast("The library didn't come back. Start it with start-library.bat.", "error");
+};
 $("#search").addEventListener("input", (e) => { state.filter.q = e.target.value; render(); });
 $("#sort").onchange = (e) => { state.sort = e.target.value; render(); };
 

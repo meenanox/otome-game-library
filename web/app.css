@@ -522,6 +522,11 @@ table.learn td:nth-child(2) { white-space: nowrap; }
 .dlc-sec summary { cursor: pointer; font-weight: 600; font-size: 15px; padding: 4px 0; }
 .dlc-row { padding: 6px 10px; border: 1px solid var(--border); border-radius: 10px; margin: 4px 0; background: var(--surface); }
 .dlc-row small { display: block; }
+.dlc-row select { max-width: 100%; margin-top: 4px; }
+.reading-lines { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; }
+.reading-lines li { padding: 6px 4px; border-bottom: 1px solid var(--border); line-height: 1.6; }
+.reading-lines time { display: block; font-size: 11px; color: var(--muted); }
+#readingSearch { width: 100%; margin: 8px 0 2px; }
 .dlc-list { margin-top: 4px; font-size: 12px; }
 .dlc-label textarea { font-weight: 400; letter-spacing: normal; text-transform: none; }
 
