@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import re
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -28,6 +29,8 @@ GAMES_FILE = DATA / "games.json"
 SETTINGS_FILE = DATA / "settings.json"
 CHARACTERS_FILE = DATA / "characters.json"  # VNDB character id -> record (fetched data only)
 STAFF_FILE = DATA / "staff.json"            # VNDB staff id -> voice actor record
+GSM_LINES_DB = DATA / "gsm_lines.db"        # sentences imported from GameSentenceMiner (our own copy)
+GSM_LINKS_FILE = DATA / "gsm_links.json"    # GSM game id -> library game id (null = ignored)
 TIERLISTS_FILE = DATA / "tierlists.json"    # the user's tier lists: names, tiers (name + colour) and placements
 RANKINGS_FILE = DATA / "rankings.json"      # the user's all-time rankings: named, ordered lists of games / routes / characters
 
@@ -51,6 +54,7 @@ DEFAULT_SETTINGS = {
 }
 
 lock = threading.Lock()
+restart = {"requested": False}  # set by the Restart button; main() relaunches after the server stops
 
 
 # ---------- storage ----------
@@ -215,6 +219,173 @@ def launch(game, settings):
         subprocess.Popen([str(exe), *args], cwd=str(exe.parent))
     else:
         raise ValueError("Physical copies can't be launched.")
+
+
+# ---------- GameSentenceMiner (read-only import of logged sentences) ----------
+
+def gsm_db_path(settings=None):
+    custom = ((settings or load_settings()).get("gsmDbPath") or "").strip().strip('"')
+    return Path(custom) if custom else Path(os.environ.get("APPDATA", "")) / "GameSentenceMiner" / "gsm.db"
+
+
+def gsm_open():
+    """GSM's database, opened read-only. GSM keeps it open, so we never write to it."""
+    path = gsm_db_path()
+    if not path.is_file():
+        raise ValueError(f"GSM database not found at {path}. Set its location in data/settings.json (gsmDbPath).")
+    db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=10)
+    db.row_factory = sqlite3.Row
+    return db
+
+
+def gsm_store():
+    DATA.mkdir(exist_ok=True)
+    db = sqlite3.connect(GSM_LINES_DB, timeout=10)
+    db.row_factory = sqlite3.Row
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS lines (id TEXT PRIMARY KEY, game_id TEXT, gsm_game_id TEXT, ts REAL, text TEXT);
+        CREATE INDEX IF NOT EXISTS lines_game ON lines (game_id, ts);
+        CREATE TABLE IF NOT EXISTS stats (gsm_game_id TEXT PRIMARY KEY, seconds REAL, cards INTEGER, days INTEGER);
+        CREATE TABLE IF NOT EXISTS daily (gsm_game_id TEXT, date TEXT, seconds REAL, PRIMARY KEY (gsm_game_id, date));
+    """)
+    return db
+
+
+def gsm_suggest(g, games):
+    """Best library match for a GSM game: VNDB id, then exact title, then nothing."""
+    vid = (g["vndb_id"] or "").strip()
+    if vid:
+        hit = next((x for x in games if x.get("vndbId") == vid), None)
+        if hit:
+            return hit["id"], "vndb"
+    names = {normalise(n) for n in (g["title_original"], g["title_romaji"], g["title_english"], g["obs_scene_name"]) if n}
+    names.discard("")
+    for x in games:
+        if names & ({normalise(x.get("title")), normalise(x.get("originalTitle"))} - {""}):
+            return x["id"], "title"
+    return None, ""
+
+
+def gsm_games():
+    """Every GSM game with its sentence count, the suggested/chosen library match and how much is already imported."""
+    links = read_json(GSM_LINKS_FILE, {})
+    games = load_games()
+    src = gsm_open()
+    try:
+        rows = src.execute("""
+            SELECT g.id, g.title_original, g.title_romaji, g.title_english, g.vndb_id, g.obs_scene_name,
+                   COUNT(l.id) AS lines, COALESCE(SUM(LENGTH(l.line_text)), 0) AS chars,
+                   MIN(l.timestamp) AS first, MAX(l.timestamp) AS last
+            FROM games g LEFT JOIN game_lines l ON l.game_id = g.id GROUP BY g.id ORDER BY lines DESC""").fetchall()
+    finally:
+        src.close()
+    store = gsm_store()
+    imported = {r["gsm_game_id"]: r["n"] for r in store.execute("SELECT gsm_game_id, COUNT(*) n FROM lines GROUP BY gsm_game_id")}
+    store.close()
+    out = []
+    for r in rows:
+        suggested, how = gsm_suggest(r, games)
+        out.append({
+            "id": r["id"], "title": r["title_original"] or r["title_english"] or r["obs_scene_name"] or "(untitled)",
+            "romaji": r["title_romaji"] or r["title_english"] or "", "vndbId": r["vndb_id"] or "",
+            "lines": r["lines"], "chars": r["chars"], "first": r["first"], "last": r["last"],
+            "imported": imported.get(r["id"], 0),
+            "linked": links.get(r["id"]) if r["id"] in links else None,   # None: not decided yet; "" / null saved = skipped
+            "decided": r["id"] in links,
+            "suggested": suggested, "suggestedBy": how,
+        })
+    return out
+
+
+def gsm_import(choices):
+    """choices: {gsmGameId: libraryGameId or null}. Saves the links, then copies new sentences (re-runnable)."""
+    games = {g["id"] for g in load_games()}
+    links = read_json(GSM_LINKS_FILE, {})
+    for gsm_id, lib_id in (choices or {}).items():
+        if lib_id and lib_id not in games:
+            raise ValueError("That library game doesn't exist any more.")
+        links[str(gsm_id)] = lib_id or None
+    write_json(GSM_LINKS_FILE, links)
+    added = 0
+    store = gsm_store()
+    src = gsm_open()
+    try:
+        with store:
+            for gsm_id, lib_id in links.items():
+                if not lib_id:
+                    continue
+                rows = src.execute("SELECT id, timestamp, line_text FROM game_lines WHERE game_id = ?", (gsm_id,)).fetchall()
+                before = store.total_changes
+                store.executemany("INSERT OR IGNORE INTO lines VALUES (?,?,?,?,?)",
+                                  [(r["id"], lib_id, gsm_id, r["timestamp"], r["line_text"] or "") for r in rows])
+                added += store.total_changes - before
+                # keep lines pointing at the right game if a link was changed
+                store.execute("UPDATE lines SET game_id = ? WHERE gsm_game_id = ? AND game_id != ?", (lib_id, gsm_id, lib_id))
+                st = src.execute("""SELECT COALESCE(SUM(CAST(total_reading_time_seconds AS REAL)), 0) s,
+                                           COALESCE(SUM(CAST(total_cards_mined AS INTEGER)), 0) c, COUNT(*) d
+                                    FROM game_daily_rollup WHERE game_id = ?""", (gsm_id,)).fetchone()
+                store.execute("INSERT OR REPLACE INTO stats VALUES (?,?,?,?)", (gsm_id, st["s"], st["c"], st["d"]))
+                store.execute("DELETE FROM daily WHERE gsm_game_id = ?", (gsm_id,))
+                store.executemany("INSERT INTO daily VALUES (?,?,?) ON CONFLICT DO UPDATE SET seconds = seconds + excluded.seconds",
+                                  [(gsm_id, r["date"], r["s"]) for r in src.execute(
+                                      "SELECT date, SUM(CAST(total_reading_time_seconds AS REAL)) s FROM game_daily_rollup WHERE game_id = ? GROUP BY date", (gsm_id,))])
+    finally:
+        src.close()
+        store.close()
+    return {"added": added, "linked": sum(1 for v in links.values() if v)}
+
+
+IDLE_CAP = 180  # seconds: a longer gap between two sentences isn't counted as reading time
+
+
+def gsm_days():
+    """Per day, per library game: sentences, characters and reading time (GSM's own daily figure where it has one,
+    otherwise estimated from the gaps between sentences)."""
+    store = gsm_store()
+    try:
+        rows = store.execute("SELECT ts, game_id, gsm_game_id, LENGTH(text) n FROM lines ORDER BY gsm_game_id, ts").fetchall()
+        rollup = {(r["gsm_game_id"], r["date"]): r["seconds"] for r in store.execute("SELECT * FROM daily")}
+    finally:
+        store.close()
+    acc = {}      # (date, gsm game) -> [library game, lines, chars, estimated seconds]
+    prev = (None, None)
+    for r in rows:
+        day = time.strftime("%Y-%m-%d", time.localtime(r["ts"]))
+        a = acc.setdefault((day, r["gsm_game_id"]), [r["game_id"], 0, 0, 0.0])
+        a[1] += 1
+        a[2] += r["n"]
+        if prev[0] == r["gsm_game_id"] and prev[2] == day:
+            a[3] += min(r["ts"] - prev[1], IDLE_CAP)
+        prev = (r["gsm_game_id"], r["ts"], day)
+    days = {}
+    for (day, gsm_id), (lib_id, lines, chars, est) in acc.items():
+        secs = rollup.get((gsm_id, day), est)
+        item = days.setdefault(day, {}).setdefault(lib_id, {"gameId": lib_id, "lines": 0, "chars": 0, "seconds": 0.0})
+        item["lines"] += lines
+        item["chars"] += chars
+        item["seconds"] += secs
+    return [{"date": d, "items": sorted(v.values(), key=lambda i: -i["chars"])} for d, v in sorted(days.items())]
+
+
+def gsm_game_log(lib_id, offset=0, query=""):
+    """Stats and a page of imported sentences (newest first) for one library game."""
+    links = read_json(GSM_LINKS_FILE, {})
+    gsm_ids = [k for k, v in links.items() if v == lib_id]
+    store = gsm_store()
+    try:
+        agg = store.execute("SELECT COUNT(*) n, COALESCE(SUM(LENGTH(text)),0) c, MIN(ts) f, MAX(ts) l FROM lines WHERE game_id = ?", (lib_id,)).fetchone()
+        marks = ",".join("?" * len(gsm_ids)) or "NULL"
+        stats = store.execute(f"SELECT * FROM stats WHERE gsm_game_id IN ({marks})", gsm_ids).fetchall()
+        like = "%" + str(query).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        rows = store.execute("SELECT ts, text FROM lines WHERE game_id = ? AND text LIKE ? ESCAPE '\\' ORDER BY ts DESC LIMIT 100 OFFSET ?",
+                             (lib_id, like, max(0, int(offset or 0)))).fetchall()
+        total = store.execute("SELECT COUNT(*) FROM lines WHERE game_id = ? AND text LIKE ? ESCAPE '\\'", (lib_id, like)).fetchone()[0]
+        days = store.execute("SELECT COUNT(DISTINCT date(ts, 'unixepoch', 'localtime')) FROM lines WHERE game_id = ?", (lib_id,)).fetchone()[0]
+    finally:
+        store.close()
+    return {"linked": bool(gsm_ids), "lines": agg["n"], "chars": agg["c"], "first": agg["f"], "last": agg["l"], "days": days,
+            "seconds": sum(r["seconds"] for r in stats), "cards": sum(r["cards"] for r in stats),
+            "total": total, "items": [{"ts": r["ts"], "text": r["text"]} for r in rows]}
 
 
 # ---------- VNDB ----------
@@ -1514,6 +1685,13 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/jiten/(deck|vocab)/(\d+)", path)
             if m:
                 return self.send_json((jiten_deck if m.group(1) == "deck" else jiten_vocab)(m.group(2)))
+            if path == "/api/gsm/days":
+                return self.send_json(gsm_days())
+            if path == "/api/gsm/games":
+                return self.send_json(gsm_games())
+            m = re.fullmatch(r"/api/gsm/log/([\w-]+)", path)
+            if m:
+                return self.send_json(gsm_game_log(m.group(1), query.get("offset", ["0"])[0], query.get("q", [""])[0]))
             if path == "/api/library/summary":
                 return self.send_json(library_summary())
             if path == "/api/characters":
@@ -1536,6 +1714,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not key:
                     raise ValueError("No itch.io API key yet. Add one in Settings.")
                 return self.send_json(itch_owned(key))
+        except sqlite3.Error as e:
+            return self.send_json({"error": f"GSM database problem: {e}"}, 500)
         except urllib.error.URLError as e:
             return self.send_json({"error": f"Network error: {e.reason}"}, 502)
         except ValueError as e:
@@ -1563,6 +1743,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(reset_library(self.read_body().get("mode")))
             if path == "/api/folder/browse":
                 return self.send_json(pick_folder())
+            if path == "/api/restart":
+                self.send_json({"ok": True})
+                self.wfile.flush()
+                # shutdown() must run off the request thread; main() then relaunches us
+                restart["requested"] = True
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
+            if path == "/api/gsm/import":
+                return self.send_json(gsm_import(self.read_body().get("links")))
             if path == "/api/ignore":
                 b = self.read_body()
                 return self.send_json(set_ignored(b.get("list"), b.get("path") or "", b.get("title"), b.get("ignore") is not False))
@@ -1591,6 +1780,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(game)
         except ValueError as e:
             return self.send_json({"error": str(e)}, 400)
+        except sqlite3.Error as e:
+            return self.send_json({"error": f"GSM database problem: {e}"}, 500)
         except urllib.error.URLError as e:
             return self.send_json({"error": f"VNDB request failed: {getattr(e, 'reason', e)}"}, 502)
         except OSError as e:
@@ -1657,9 +1848,15 @@ def main():
     DATA.mkdir(exist_ok=True)
     # On Windows, address reuse would let us silently share a port another app owns
     ThreadingHTTPServer.allow_reuse_address = False
-    try:
-        server = ThreadingHTTPServer((HOST, PORT), Handler)
-    except OSError:
+    server = None
+    # A restarted copy may start before the old one has let go of the port, so retry briefly
+    for _ in range(40 if "--restarted" in sys.argv else 1):
+        try:
+            server = ThreadingHTTPServer((HOST, PORT), Handler)
+            break
+        except OSError:
+            time.sleep(0.25)
+    if server is None:
         sys.exit(f"Port {PORT} is already in use. Is the library already running? "
                  f"(Or set a different PORT environment variable.)")
     url = f"http://localhost:{PORT}/"
@@ -1670,6 +1867,11 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    server.server_close()  # frees the port
+    if restart["requested"]:
+        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)  # a fresh console window, like start-library.bat gives
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--no-browser", "--restarted"],
+                         cwd=str(ROOT), creationflags=flags)
 
 
 if __name__ == "__main__":

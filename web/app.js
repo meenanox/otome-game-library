@@ -196,9 +196,9 @@ function openDetail(id) {
             `<option value="${v}" ${g.status === v ? "selected" : ""}>${l}</option>`).join("")}</select>
           <span class="stars">${stars}</span>
         </div>
-        <div class="tabs">${[["overview", "Overview"], ["log", "Log"], ["study", "Study"]].map(([k, l]) =>
+        <div class="tabs">${[["overview", "Overview"], ["log", "Log"], ["study", "Study"], ["reading", "Reading"]].map(([k, l]) =>
           `<button data-tab="${k}" aria-pressed="${detailTab === k}">${l}</button>`).join("")}</div>
-        ${detailTab === "study" ? `<div id="studyPane">${studyHTML(g)}</div>` : detailTab === "log" ? logHTML(g) : `
+        ${detailTab === "study" ? `<div id="studyPane">${studyHTML(g)}</div>` : detailTab === "reading" ? `<div id="readingPane"><p class="muted">Loading…</p></div>` : detailTab === "log" ? logHTML(g) : `
         ${g.notes ? `<div class="notes">${esc(g.notes)}</div>` : ""}
         ${g.description ? `<p class="desc">${esc(g.description)}</p>` : ""}
         <section class="routes">
@@ -267,6 +267,107 @@ function openDetail(id) {
   bindLog(g, dlg);
   if (!dlg.open) dlg.showModal();
   if (detailTab === "study") loadStudy(g);
+  if (detailTab === "reading") loadReading(g);
+}
+
+// ---------- GameSentenceMiner: imported sentences ----------
+
+const gsmDate = (ts) => ts ? new Date(ts * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
+const gsmHours = (s) => s >= 3600 ? `${(s / 3600).toFixed(1)} h` : `${Math.round(s / 60)} min`;
+const gsmState = { rows: [] };
+
+async function openGsm() {
+  startImport("gsm", "Import from GameSentenceMiner", "Reading GSM's database…");
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button>`;
+  try {
+    gsmState.rows = await api("GET", "/api/gsm/games");
+    renderGsm();
+  } catch (e) {
+    $("#itchBody").innerHTML = `<p>${esc(e.message)}</p>`;
+  }
+}
+
+function gsmOptions(selected) {
+  const games = [...state.games].sort((a, b) => a.title.localeCompare(b.title));
+  return `<option value="">Don't import</option>` + games.map((g) =>
+    `<option value="${esc(g.id)}" ${g.id === selected ? "selected" : ""}>${esc(g.title)}</option>`).join("");
+}
+
+function renderGsm() {
+  const withLines = gsmState.rows.filter((r) => r.lines > 0);
+  const empty = gsmState.rows.length - withLines.length;
+  const total = withLines.reduce((n, r) => n + r.lines, 0);
+  const row = (r) => {
+    // Chosen link wins, then the app's suggestion; only exact VNDB / title matches are pre-filled.
+    const pick = r.decided ? r.linked : r.suggested;
+    const note = r.decided ? "" : r.suggested ? `<small class="muted">matched by ${r.suggestedBy === "vndb" ? "VNDB id" : "title"}</small>` : `<small class="muted">no match: pick a game or skip</small>`;
+    return `<div class="dlc-row">
+      <b>${esc(r.title)}</b>
+      <small>${fmt(r.lines)} lines · ${fmt(r.chars)} characters · ${gsmDate(r.first)} – ${gsmDate(r.last)}${r.imported ? ` · ${fmt(r.imported)} already imported` : ""}</small>
+      <select data-gsm="${esc(r.id)}" aria-label="Library game for ${esc(r.title)}">${gsmOptions(pick)}</select> ${note}
+    </div>`;
+  };
+  $("#itchBody").innerHTML = `
+    <p>GSM has <b>${fmt(total)}</b> logged sentences across ${withLines.length} games. Pick the library game for each one, then import. GSM's database is only read, never changed. Importing again later adds just the new lines.</p>
+    ${withLines.map(row).join("") || `<p class="muted">GSM has no logged sentences yet.</p>`}
+    ${empty ? `<p class="muted"><small>${empty} GSM games with no sentences are hidden.</small></p>` : ""}`;
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button><button type="button" class="primary" id="gsmGo">Import</button>`;
+}
+
+$("#itchDialog").addEventListener("click", async (e) => {
+  if (itch.source !== "gsm" || e.target.id !== "gsmGo") return;
+  const links = {};
+  $$("[data-gsm]", $("#itchBody")).forEach((s) => { links[s.dataset.gsm] = s.value || null; });
+  e.target.disabled = true;
+  e.target.textContent = "Importing…";
+  try {
+    const res = await api("POST", "/api/gsm/import", { links });
+    $("#itchDialog").close();
+    toast(res.added ? `Imported ${fmt(res.added)} new sentences` : "Already up to date");
+  } catch (err) {
+    e.target.disabled = false;
+    e.target.textContent = "Import";
+    toast(err.message, "error");
+  }
+});
+
+let readingQuery = "";
+
+async function loadReading(g, offset = 0) {
+  const pane = $("#readingPane");
+  if (!pane) return;
+  try {
+    const d = await api("GET", `/api/gsm/log/${encodeURIComponent(g.id)}?offset=${offset}&q=${encodeURIComponent(readingQuery)}`);
+    if (detailTab !== "reading" || !$("#readingPane")) return;
+    if (!d.linked || !d.lines) {
+      pane.innerHTML = `<p class="muted">${d.linked ? "No sentences imported for this game yet." : "No GameSentenceMiner sentences are linked to this game."} Use <b>Import from GSM</b> in the side menu.</p>`;
+      return;
+    }
+    const perHour = d.seconds > 0 ? Math.round(d.chars / (d.seconds / 3600)) : 0;
+    const items = d.items.map((i) => `<li><time>${new Date(i.ts * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time> ${esc(i.text)}</li>`).join("");
+    pane.innerHTML = `
+      <div class="stats">
+        <div class="stat"><span>Characters read</span><b>${fmt(d.chars)}</b></div>
+        <div class="stat"><span>Sentences</span><b>${fmt(d.lines)}</b></div>
+        <div class="stat"><span>Reading time</span><b>${d.seconds ? gsmHours(d.seconds) : "—"}</b></div>
+        <div class="stat"><span>Speed</span><b>${perHour ? `${fmt(perHour)}/h` : "—"}</b></div>
+        <div class="stat"><span>Days played</span><b>${fmt(d.days)}</b></div>
+        <div class="stat"><span>First – last</span><b>${gsmDate(d.first)} – ${gsmDate(d.last)}</b></div>
+      </div>
+      <input type="search" id="readingSearch" placeholder="Search sentences…" value="${esc(readingQuery)}" aria-label="Search sentences">
+      <p class="muted"><small>${fmt(d.total)} matching · showing ${fmt(offset + 1)}–${fmt(offset + d.items.length)}, newest first</small></p>
+      <ol class="reading-lines">${items || `<li class="muted">Nothing matches.</li>`}</ol>
+      <div class="detail-controls">
+        <button type="button" class="ghost" id="readingPrev" ${offset ? "" : "disabled"}>← Newer</button>
+        <button type="button" class="ghost" id="readingNext" ${offset + d.items.length < d.total ? "" : "disabled"}>Older →</button>
+      </div>`;
+    const search = $("#readingSearch");
+    search.onchange = () => { readingQuery = search.value.trim(); loadReading(g, 0); };
+    $("#readingPrev").onclick = () => loadReading(g, Math.max(0, offset - 100));
+    $("#readingNext").onclick = () => loadReading(g, offset + 100);
+  } catch (e) {
+    pane.innerHTML = `<p class="error">${esc(e.message)}</p>`;
+  }
 }
 
 // ---------- playthrough log (dates, hours, notes, flavour) ----------
@@ -1961,19 +2062,76 @@ function renderVAs(host) {
 const openGameFrom = (el) => { const b = el.closest("[data-game]"); if (b) { detailTab = "overview"; openDetail(b.dataset.game); } };
 const dateRange = (g) => `${g.startedOn || "?"} → ${g.finishedOn || "…"}`;
 
-VIEWS.timeline = {
-  render(host) {
-    const dated = state.games.filter((g) => inDiary(g) && (g.startedOn || g.finishedOn))
-      .sort((a, b) => (a.startedOn || a.finishedOn).localeCompare(b.startedOn || b.finishedOn));
-    const undated = state.games.filter((g) => inDiary(g) && !g.startedOn && !g.finishedOn).length;
-    const byYear = new Map();
-    for (const g of dated) {
-      const y = (g.startedOn || g.finishedOn).slice(0, 4);
-      if (!byYear.has(y)) byYear.set(y, []);
-      byYear.get(y).push(g);
-    }
-    host.innerHTML = `<h2 class="page-h">Timeline</h2>
-      ${dated.length ? `<div class="trail">${[...byYear].map(([y, gs]) => `
+// ---------- Timeline: reading calendar (days played, from imported GSM sentences) + the dated-games trail ----------
+
+const tlUI = { mode: "calendar", month: "", day: "", days: null };
+const pad2 = (n) => String(n).padStart(2, "0");
+const shortChars = (n) => n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+const monthLabel = (m) => new Date(+m.slice(0, 4), +m.slice(5) - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+const shiftMonth = (m, by) => { const d = new Date(+m.slice(0, 4), +m.slice(5) - 1 + by, 1); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`; };
+const gameById = (id) => state.games.find((g) => g.id === id);
+
+function calendarHTML() {
+  const byDate = new Map((tlUI.days || []).map((d) => [d.date, d.items]));
+  const [y, m] = [+tlUI.month.slice(0, 4), +tlUI.month.slice(5)];
+  const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7; // weeks start on Monday
+  const count = new Date(y, m, 0).getDate();
+  const keys = Array.from({ length: count }, (_, i) => `${tlUI.month}-${pad2(i + 1)}`);
+  const sum = (items) => items.reduce((t, i) => ({ chars: t.chars + i.chars, lines: t.lines + i.lines, seconds: t.seconds + i.seconds }), { chars: 0, lines: 0, seconds: 0 });
+  const played = keys.filter((k) => byDate.has(k));
+  const month = sum(played.flatMap((k) => byDate.get(k)));
+  const maxChars = Math.max(1, ...played.map((k) => sum(byDate.get(k)).chars));
+  // Games started / finished on a day (from the Log tab) get a small marker
+  const marks = new Map();
+  for (const g of state.games) {
+    if (g.startedOn) marks.set(g.startedOn, [...(marks.get(g.startedOn) || []), `▶ started ${g.title}`]);
+    if (g.finishedOn) marks.set(g.finishedOn, [...(marks.get(g.finishedOn) || []), `✓ finished ${g.title}`]);
+  }
+  const today = `${new Date().getFullYear()}-${pad2(new Date().getMonth() + 1)}-${pad2(new Date().getDate())}`;
+  const cell = (k, i) => {
+    const items = byDate.get(k) || [];
+    const t = sum(items);
+    const covers = items.slice(0, 3).map((it) => { const g = gameById(it.gameId); return g ? `<span class="mini-cover" title="${esc(g.title)}">${coverHTML(g)}</span>` : ""; }).join("");
+    const mk = marks.get(k);
+    return `<button type="button" class="cal-day ${items.length ? "has" : ""} ${k === tlUI.day ? "sel" : ""} ${k === today ? "today" : ""}" data-day="${k}" style="--heat:${items.length ? Math.max(.15, t.chars / maxChars) : 0}">
+      <b>${i + 1}</b>${mk ? `<span class="cal-mark" title="${esc(mk.join("\n"))}">${mk[0].startsWith("✓") ? "✓" : "▶"}</span>` : ""}
+      ${items.length ? `<span class="cal-covers">${covers}${items.length > 3 ? `<small>+${items.length - 3}</small>` : ""}</span>
+        <small>${shortChars(t.chars)}${t.seconds ? ` · ${gsmHours(t.seconds)}` : ""}</small>` : ""}</button>`;
+  };
+  const items = byDate.get(tlUI.day) || [];
+  const dt = sum(items);
+  const panel = tlUI.day ? `<section class="cal-panel">
+      <h3>${new Date(tlUI.day + "T12:00").toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+        ${items.length ? `<small>${fmt(dt.chars)} characters · ${fmt(dt.lines)} sentences${dt.seconds ? ` · ${gsmHours(dt.seconds)}` : ""}</small>` : ""}</h3>
+      ${items.map((it) => { const g = gameById(it.gameId); return g ? `<article class="trail-item" tabindex="0" data-game="${esc(g.id)}">
+        <div class="trail-cover">${coverHTML(g)}</div>
+        <div><b>${esc(g.title)}</b><small>${fmt(it.chars)} characters · ${fmt(it.lines)} sentences${it.seconds ? ` · ${gsmHours(it.seconds)}` : ""}${it.seconds > 60 ? ` · ${fmt(Math.round(it.chars / (it.seconds / 3600)))}/h` : ""}</small></div></article>` : ""; }).join("")
+        || `<p class="muted">No reading logged this day.</p>`}
+      ${(marks.get(tlUI.day) || []).map((t) => `<p class="muted">${esc(t)}</p>`).join("")}
+    </section>` : "";
+  return `<div class="cal-head">
+      <button type="button" class="ghost" data-cal="-1" aria-label="Previous month">←</button>
+      <h3>${esc(monthLabel(tlUI.month))}</h3>
+      <button type="button" class="ghost" data-cal="1" aria-label="Next month">→</button>
+      <button type="button" class="ghost" data-cal="today">Today</button>
+      <small class="muted spacer">${played.length ? `${played.length} day${played.length === 1 ? "" : "s"} played · ${fmt(month.chars)} characters${month.seconds ? ` · ${gsmHours(month.seconds)}` : ""}` : "Nothing logged this month"}</small>
+    </div>
+    <div class="cal-grid">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => `<span class="cal-dow">${d}</span>`).join("")}
+      ${Array.from({ length: lead }, () => `<span></span>`).join("")}${keys.map(cell).join("")}</div>
+    ${panel}`;
+}
+
+function trailHTML() {
+  const dated = state.games.filter((g) => inDiary(g) && (g.startedOn || g.finishedOn))
+    .sort((a, b) => (a.startedOn || a.finishedOn).localeCompare(b.startedOn || b.finishedOn));
+  const undated = state.games.filter((g) => inDiary(g) && !g.startedOn && !g.finishedOn).length;
+  const byYear = new Map();
+  for (const g of dated) {
+    const y = (g.startedOn || g.finishedOn).slice(0, 4);
+    if (!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(g);
+  }
+  return `${dated.length ? `<div class="trail">${[...byYear].map(([y, gs]) => `
         <section class="trail-year"><h3>${esc(y)} <small>${gs.length} game${gs.length === 1 ? "" : "s"}</small></h3>
           ${gs.map((g, i) => `
           <article class="trail-item ${i % 2 ? "alt" : ""}" tabindex="0" data-game="${esc(g.id)}" title="${esc(dateRange(g))}">
@@ -1984,7 +2142,35 @@ VIEWS.timeline = {
           </article>`).join("")}
         </section>`).join("")}</div>` : `<p class="empty">No dated games yet. Add start and finish dates in a game's Log tab.</p>`}
       ${undated ? `<p class="muted">${undated} diary game${undated === 1 ? " has" : "s have"} no dates yet, so ${undated === 1 ? "it isn't" : "they aren't"} on the trail.</p>` : ""}`;
-    host.onclick = (e) => openGameFrom(e.target);
+}
+
+VIEWS.timeline = {
+  async render(host, refetch = true) {
+    if (refetch || !tlUI.days) {
+      tlUI.days = await api("GET", "/api/gsm/days").catch(() => []);
+      if (!tlUI.month) {
+        const last = tlUI.days.at(-1)?.date || new Date().toISOString().slice(0, 10);
+        tlUI.month = last.slice(0, 7);
+        tlUI.day = tlUI.days.at(-1)?.date || "";
+      }
+    }
+    const empty = !tlUI.days.length;
+    host.innerHTML = `<h2 class="page-h">Timeline</h2>
+      <div class="tabs">${[["calendar", "Calendar"], ["trail", "Trail"]].map(([k, l]) =>
+        `<button type="button" data-tlmode="${k}" aria-pressed="${tlUI.mode === k}">${l}</button>`).join("")}</div>
+      ${tlUI.mode === "trail" ? trailHTML() : `${empty ? `<p class="muted">No reading logged yet. Use <b>Import from GSM</b> in the side menu to bring in your sentences, and the days you played will show up here.</p>` : ""}${calendarHTML()}`}`;
+    const again = () => VIEWS.timeline.render(host, false);
+    host.onclick = (e) => {
+      const t = e.target.closest("button");
+      if (t?.dataset.tlmode) { tlUI.mode = t.dataset.tlmode; return again(); }
+      if (t?.dataset.cal) {
+        if (t.dataset.cal === "today") { const n = new Date(); tlUI.month = `${n.getFullYear()}-${pad2(n.getMonth() + 1)}`; tlUI.day = `${tlUI.month}-${pad2(n.getDate())}`; }
+        else tlUI.month = shiftMonth(tlUI.month, +t.dataset.cal);
+        return again();
+      }
+      if (t?.dataset.day) { tlUI.day = t.dataset.day; return again(); }
+      openGameFrom(e.target);
+    };
     host.onkeydown = (e) => { if (e.key === "Enter") openGameFrom(e.target); };
   },
 };
@@ -2751,6 +2937,26 @@ $("#folderBtn").onclick = openFolder;
 $("#addFolderBtn").onclick = openFolder;
 $("#checkBtn").onclick = openCheck;
 $("#dlcBtn").onclick = openDlc;
+$("#gsmBtn").onclick = openGsm;
+$("#restartBtn").onclick = async () => {
+  if (!confirm("Restart the library? The page reloads in a few seconds.")) return;
+  try {
+    await api("POST", "/api/restart");
+  } catch (e) {
+    return toast(e.message, "error");
+  }
+  toast("Restarting…");
+  // Wait for the old server to go and the new one to answer, then reload
+  let down = false;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      await fetch("/api/settings", { cache: "no-store" });
+      if (down || i >= 8) return location.reload(); // up again (or never seen down: it restarted fast)
+    } catch { down = true; }
+  }
+  toast("The library didn't come back. Start it with start-library.bat.", "error");
+};
 $("#search").addEventListener("input", (e) => { state.filter.q = e.target.value; render(); });
 $("#sort").onchange = (e) => { state.sort = e.target.value; render(); };
 
