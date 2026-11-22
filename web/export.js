@@ -126,7 +126,8 @@ async function renderTierImage(canvas, opts, list, items) {
   const shown = rows.filter((r) => r.items.length || !opts.hideEmpty);
 
   const W = opts.width, cardW = exportSizes.card[opts.card] || 108, cardH = Math.round(cardW * 1.5), gap = 10;
-  const nameH = opts.names ? 30 : 0;
+  const nameFs = +opts.nameSize || 13;
+  const nameH = opts.names ? Math.round(nameFs * 1.5) + 10 : 0;
   const innerW = W - T.pad * 2 - T.labelW - T.rowPad * 2;
   const per = Math.max(1, Math.floor((innerW + gap) / (cardW + gap)));
   const cellH = cardH + nameH;
@@ -223,9 +224,9 @@ async function renderTierImage(canvas, opts, list, items) {
       const cx = ax + (i % per) * (cardW + gap), cy = y + T.rowPad + Math.floor(i / per) * (cellH + gap);
       drawCover(ctx, imgs.get(it.key), cx, cy, cardW, cardH, T.cardRadius, T, (it.label || "?")[0]);
       if (opts.names) {
-        ctx.font = '500 13px "Segoe UI", "Yu Gothic UI", sans-serif'; ctx.fillStyle = T.names.color;
+        ctx.font = `500 ${nameFs}px "Segoe UI", "Yu Gothic UI", sans-serif`; ctx.fillStyle = T.names.color;
         ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
-        ctx.fillText(fitText(ctx, it.label || "", cardW + 6), cx + cardW / 2, cy + cardH + 20);
+        ctx.fillText(fitText(ctx, it.label || "", cardW + 6), cx + cardW / 2, cy + cardH + nameFs + 6);
       }
     });
     y += h + T.rowGap;
@@ -253,7 +254,8 @@ function openTierExport(list, items) {
             <label>Footer <input id="exFoot" maxlength="100" placeholder="optional, e.g. your name"></label>
             <div class="row"><label>Card size <select id="exCard"><option value="s">Small</option><option value="m">Medium</option><option value="l">Large</option></select></label>
               <label>Width <select id="exWidth">${exportSizes.width.map((w) => `<option value="${w}">${w}px</option>`).join("")}</select></label></div>
-            <label class="inline"><input type="checkbox" id="exNames"> Show names under cards</label>
+            <div class="row"><label class="inline"><input type="checkbox" id="exNames"> Show names under cards</label>
+              <label>Name size <select id="exNameSize"><option value="13">Small</option><option value="18">Medium</option><option value="24">Large</option><option value="32">Extra large</option></select></label></div>
             <label class="inline"><input type="checkbox" id="exHide"> Hide empty tiers</label>
             <label class="inline"><input type="checkbox" id="exUnranked"> Include the Unranked row</label>
             <small id="exInfo" class="muted"></small>
@@ -272,14 +274,14 @@ function openTierExport(list, items) {
 
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(EXPORT_OPTS_KEY)) || {}; } catch (e) {}
-  const o = { template: "pastel", title: list.name, subtitle: "", footer: "", card: "m", width: 1600, names: false, hideEmpty: true,
+  const o = { template: "pastel", title: list.name, subtitle: "", footer: "", card: "m", width: 1600, names: false, nameSize: 13, hideEmpty: true,
               unranked: false, ...saved, title: list.name }; // the title always starts as this list's name
   const set = () => {
     $("#exTemplates", dlg).innerHTML = Object.entries(EXPORT_TEMPLATES).map(([k, t]) =>
       `<button type="button" class="chip ex-t" data-tpl="${k}" aria-pressed="${o.template === k}"><b>${esc(t.name)}</b><small>${esc(t.blurb)}</small></button>`).join("");
     $("#exTitle", dlg).value = o.title; $("#exSub", dlg).value = o.subtitle; $("#exFoot", dlg).value = o.footer;
     $("#exCard", dlg).value = o.card; $("#exWidth", dlg).value = String(o.width);
-    $("#exNames", dlg).checked = o.names; $("#exHide", dlg).checked = o.hideEmpty; $("#exUnranked", dlg).checked = o.unranked;
+    $("#exNameSize", dlg).value = String(o.nameSize); $("#exNames", dlg).checked = o.names; $("#exHide", dlg).checked = o.hideEmpty; $("#exUnranked", dlg).checked = o.unranked;
   };
   set();
 
@@ -299,7 +301,7 @@ function openTierExport(list, items) {
   const read = () => {
     o.title = $("#exTitle", dlg).value; o.subtitle = $("#exSub", dlg).value; o.footer = $("#exFoot", dlg).value;
     o.card = $("#exCard", dlg).value; o.width = +$("#exWidth", dlg).value;
-    o.names = $("#exNames", dlg).checked; o.hideEmpty = $("#exHide", dlg).checked; o.unranked = $("#exUnranked", dlg).checked;
+    o.nameSize = +$("#exNameSize", dlg).value; o.names = $("#exNames", dlg).checked; o.hideEmpty = $("#exHide", dlg).checked; o.unranked = $("#exUnranked", dlg).checked;
     soon();
   };
   dlg.oninput = read; dlg.onchange = read;
