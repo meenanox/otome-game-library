@@ -127,7 +127,7 @@ async function renderTierImage(canvas, opts, list, items) {
 
   const W = opts.width, cardW = exportSizes.card[opts.card] || 108, cardH = Math.round(cardW * 1.5), gap = 10;
   const nameFs = +opts.nameSize || 13;
-  const nameH = opts.names ? Math.round(nameFs * 1.5) + 10 : 0;
+  const nameH = opts.names ? Math.round(nameFs * 1.25) * 2 + 10 : 0; // room for two lines
   const innerW = W - T.pad * 2 - T.labelW - T.rowPad * 2;
   const per = Math.max(1, Math.floor((innerW + gap) / (cardW + gap)));
   const cellH = cardH + nameH;
@@ -226,7 +226,16 @@ async function renderTierImage(canvas, opts, list, items) {
       if (opts.names) {
         ctx.font = `500 ${nameFs}px "Segoe UI", "Yu Gothic UI", sans-serif`; ctx.fillStyle = T.names.color;
         ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
-        ctx.fillText(fitText(ctx, it.label || "", cardW + 6), cx + cardW / 2, cy + cardH + nameFs + 6);
+        const maxW = cardW + 6, name = it.label || "", lh = Math.round(nameFs * 1.25);
+        let l1 = name, l2 = "";
+        if (ctx.measureText(name).width > maxW) { // wrap long names onto a second line
+          const words = name.split(" ");
+          l1 = words[0]; let k = 1;
+          while (k < words.length && ctx.measureText(l1 + " " + words[k]).width <= maxW) l1 += " " + words[k++];
+          l2 = words.slice(k).join(" ");
+        }
+        ctx.fillText(fitText(ctx, l1, maxW), cx + cardW / 2, cy + cardH + nameFs + 4);
+        if (l2) ctx.fillText(fitText(ctx, l2, maxW), cx + cardW / 2, cy + cardH + nameFs + 4 + lh);
       }
     });
     y += h + T.rowGap;
@@ -255,7 +264,7 @@ function openTierExport(list, items) {
             <div class="row"><label>Card size <select id="exCard"><option value="s">Small</option><option value="m">Medium</option><option value="l">Large</option></select></label>
               <label>Width <select id="exWidth">${exportSizes.width.map((w) => `<option value="${w}">${w}px</option>`).join("")}</select></label></div>
             <div class="row"><label class="inline"><input type="checkbox" id="exNames"> Show names under cards</label>
-              <label>Name size <select id="exNameSize"><option value="13">Small</option><option value="18">Medium</option><option value="24">Large</option><option value="32">Extra large</option></select></label></div>
+              <label>Name size <select id="exNameSize"><option value="13">Small</option><option value="18">Medium</option><option value="24">Large</option><option value="32">Extra large</option><option value="44">Huge</option></select></label></div>
             <label class="inline"><input type="checkbox" id="exHide"> Hide empty tiers</label>
             <label class="inline"><input type="checkbox" id="exUnranked"> Include the Unranked row</label>
             <small id="exInfo" class="muted"></small>
