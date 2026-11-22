@@ -6,11 +6,11 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const LABELS = {
-  category: { otome: "Otome", bl: "BL", josei: "Josei-muke" },
+  category: { otome: "Otome", bl: "BL", josei: "Josei-muke", other: "Non-otome" },
   format: { pc: "PC", emulated: "Emulated", physical: "Physical" },
   status: { unplayed: "Unplayed", playing: "Playing", completed: "Completed", dropped: "Dropped" },
   platform: { pc: "PC", psp: "PSP", vita: "PS Vita", switch: "Switch", ps4: "PS4", other: "Other" },
-  route: { none: "—", progress: "Playing", good: "Good end", bad: "Bad end" },
+  route: { none: "—", progress: "Playing", completed: "Completed", dropped: "Dropped" },
 };
 const THEMES = ["pastel", "noir"];
 
@@ -43,8 +43,11 @@ function toast(msg, kind = "") {
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
   el.textContent = msg;
-  $("#toasts").append(el);
-  setTimeout(() => el.remove(), kind === "error" ? 6000 : 3000);
+  const box = $("#toasts");
+  box.append(el);
+  // A modal dialog sits in the browser's top layer, above any z-index. Re-opening the toasts as a popover puts them above it.
+  try { if (box.matches(":popover-open")) box.hidePopover(); box.showPopover(); } catch (e) {}
+  setTimeout(() => { el.remove(); if (!box.children.length) try { box.hidePopover(); } catch (e) {} }, kind === "error" ? 6000 : 3000);
 }
 
 const year = (d) => (d || "").slice(0, 4);
@@ -58,7 +61,9 @@ const hoursOf = (g) => g.jiten.characterCount / (state.settings.readingSpeed || 
 const hoursText = (h) => h < 1 ? "<1" : h < 10 ? h.toFixed(1) : String(Math.round(h));
 const readPct = (g) => g.jiten?.readPercent || 0;
 let detailTab = "overview";
-const cleared = (g) => (g.routes || []).filter((r) => r.state === "good" || r.state === "bad").length;
+// Routes saved before the Completed/Dropped options used "good" / "bad" ending: both count as completed
+const routeState = (r) => r.state === "good" || r.state === "bad" ? "completed" : r.state || "none";
+const cleared = (g) => (g.routes || []).filter((r) => routeState(r) === "completed").length;
 
 function coverHTML(g) {
   if (g.cover) return `<img class="cover" src="${esc(g.cover)}" alt="" loading="lazy">`;
@@ -128,7 +133,7 @@ function visibleGames() {
 
 function cardHTML(g) {
   const routes = g.routes || [];
-  const segs = routes.map((r) => `<i class="${r.state === "progress" ? "progress-s" : esc(r.state)}"></i>`).join("");
+  const segs = routes.map((r) => `<i class="${routeState(r) === "progress" ? "progress-s" : esc(routeState(r))}"></i>`).join("");
   const meta = [g.brand, year(g.released), LABELS.platform[g.platform]].filter(Boolean).map(esc).join(" · ");
   return `
     <article class="card" tabindex="0" data-open="${esc(g.id)}">
@@ -164,6 +169,12 @@ function render() {
 
 // ---------- detail dialog ----------
 
+/** A love interest's portrait: the fetched VNDB character image, once characters are loaded. */
+const routeFace = (r) => {
+  const c = r.charId && people.chars ? people.chars[r.charId] : null;
+  return (c && c.image) || "";
+};
+
 function openDetail(id) {
   const g = state.games.find((x) => x.id === id);
   if (!g) return;
@@ -174,10 +185,11 @@ function openDetail(id) {
     `<button data-rate="${n}" class="${n <= (g.rating || 0) ? "on" : ""}" aria-label="${n} stars">★</button>`).join("");
   const routes = (g.routes || []).map((r, i) => `
     <div class="route">
+      <span class="route-face" data-face="${i}">${portraitHTML(routeFace(r), r.name)}</span>
       <div class="who"><b>${esc(r.name)}</b>${r.original ? `<span>${esc(r.original)}</span>` : ""}
         ${r.seiyuu ? `<small>CV: ${esc(r.seiyuu)}</small>` : ""}</div>
       <div class="seg">${Object.entries(LABELS.route).map(([s, l]) =>
-        `<button class="${s}" data-route="${i}" data-state="${s}" aria-pressed="${(r.state || "none") === s}">${l}</button>`).join("")}</div>
+        `<button class="${s}" data-route="${i}" data-state="${s}" aria-pressed="${routeState(r) === s}">${l}</button>`).join("")}</div>
     </div>`).join("");
 
   dlg.innerHTML = `
@@ -193,9 +205,9 @@ function openDetail(id) {
             `<option value="${v}" ${g.status === v ? "selected" : ""}>${l}</option>`).join("")}</select>
           <span class="stars">${stars}</span>
         </div>
-        <div class="tabs">${[["overview", "Overview"], ["log", "Log"], ["study", "Study"]].map(([k, l]) =>
+        <div class="tabs">${[["overview", "Overview"], ["log", "Log"], ["study", "Study"], ["reading", "Reading"]].map(([k, l]) =>
           `<button data-tab="${k}" aria-pressed="${detailTab === k}">${l}</button>`).join("")}</div>
-        ${detailTab === "study" ? `<div id="studyPane">${studyHTML(g)}</div>` : detailTab === "log" ? logHTML(g) : `
+        ${detailTab === "study" ? `<div id="studyPane">${studyHTML(g)}</div>` : detailTab === "reading" ? `<div id="readingPane"><p class="muted">Loading…</p></div>` : detailTab === "log" ? logHTML(g) : `
         ${g.notes ? `<div class="notes">${esc(g.notes)}</div>` : ""}
         ${g.description ? `<p class="desc">${esc(g.description)}</p>` : ""}
         <section class="routes">
@@ -264,6 +276,118 @@ function openDetail(id) {
   bindLog(g, dlg);
   if (!dlg.open) dlg.showModal();
   if (detailTab === "study") loadStudy(g);
+  if (detailTab === "reading") loadReading(g);
+  // Portraits come from the fetched VNDB characters; fill them in without redrawing the open sheet
+  if (!people.chars && (g.routes || []).some((r) => r.charId)) {
+    loadPeople().then(() => {
+      if (!dlg.open) return;
+      $$(".route-face", dlg).forEach((el) => {
+        const r = (g.routes || [])[+el.dataset.face];
+        if (r && routeFace(r)) el.innerHTML = portraitHTML(routeFace(r), r.name);
+      });
+    });
+  }
+}
+
+// ---------- GameSentenceMiner: imported sentences ----------
+
+const gsmDate = (ts) => ts ? new Date(ts * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
+const gsmHours = (s) => s >= 3600 ? `${(s / 3600).toFixed(1)} h` : `${Math.round(s / 60)} min`;
+const gsmState = { rows: [] };
+
+async function openGsm() {
+  startImport("gsm", "Import from GameSentenceMiner", "Reading GSM's database…");
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button>`;
+  try {
+    gsmState.rows = await api("GET", "/api/gsm/games");
+    renderGsm();
+  } catch (e) {
+    $("#itchBody").innerHTML = `<p>${esc(e.message)}</p>`;
+  }
+}
+
+function gsmOptions(selected) {
+  const games = [...state.games].sort((a, b) => a.title.localeCompare(b.title));
+  return `<option value="">Don't import</option>` + games.map((g) =>
+    `<option value="${esc(g.id)}" ${g.id === selected ? "selected" : ""}>${esc(g.title)}</option>`).join("");
+}
+
+function renderGsm() {
+  const withLines = gsmState.rows.filter((r) => r.lines > 0 || r.oldChars > 0);
+  const empty = gsmState.rows.length - withLines.length;
+  const total = withLines.reduce((n, r) => n + r.lines, 0);
+  const oldTotal = withLines.reduce((n, r) => n + r.oldChars, 0);
+  const row = (r) => {
+    // Chosen link wins, then the app's suggestion; only exact VNDB / title matches are pre-filled.
+    const pick = r.decided ? r.linked : r.suggested;
+    const note = r.decided ? "" : r.suggested ? `<small class="muted">matched by ${r.suggestedBy === "vndb" ? "VNDB id" : "title"}</small>` : `<small class="muted">no match: pick a game or skip</small>`;
+    return `<div class="dlc-row">
+      <b>${esc(r.title)}</b>
+      <small>${r.lines ? `${fmt(r.lines)} lines · ${fmt(r.chars)} characters · ${gsmDate(r.first)} – ${gsmDate(r.last)}${r.imported ? ` · ${fmt(r.imported)} already imported` : ""}` : "No sentences stored"}${r.oldChars ? `<br>Older stats: ${fmt(r.oldChars)} characters over ${fmt(r.oldDays)} days · ${gsmHours(r.oldSeconds)}` : ""}</small>
+      <select data-gsm="${esc(r.id)}" aria-label="Library game for ${esc(r.title)}">${gsmOptions(pick)}</select> ${note}
+    </div>`;
+  };
+  $("#itchBody").innerHTML = `
+    <p>GSM has <b>${fmt(total)}</b> logged sentences${oldTotal ? ` and <b>${fmt(oldTotal)}</b> characters of older daily stats` : ""} across ${withLines.length} games. Pick the library game for each one, then import. GSM's database is only read, never changed. Importing again later adds just the new lines.</p>
+    ${withLines.map(row).join("") || `<p class="muted">GSM has no logged sentences yet.</p>`}
+    ${empty ? `<p class="muted"><small>${empty} GSM games with no sentences are hidden.</small></p>` : ""}`;
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button><button type="button" class="primary" id="gsmGo">Import</button>`;
+}
+
+$("#itchDialog").addEventListener("click", async (e) => {
+  if (itch.source !== "gsm" || e.target.id !== "gsmGo") return;
+  const links = {};
+  $$("[data-gsm]", $("#itchBody")).forEach((s) => { links[s.dataset.gsm] = s.value || null; });
+  e.target.disabled = true;
+  e.target.textContent = "Importing…";
+  try {
+    const res = await api("POST", "/api/gsm/import", { links });
+    $("#itchDialog").close();
+    toast(res.added ? `Imported ${fmt(res.added)} new sentences` : "Already up to date");
+  } catch (err) {
+    e.target.disabled = false;
+    e.target.textContent = "Import";
+    toast(err.message, "error");
+  }
+});
+
+let readingQuery = "";
+
+async function loadReading(g, offset = 0) {
+  const pane = $("#readingPane");
+  if (!pane) return;
+  try {
+    const d = await api("GET", `/api/gsm/log/${encodeURIComponent(g.id)}?offset=${offset}&q=${encodeURIComponent(readingQuery)}`);
+    if (detailTab !== "reading" || !$("#readingPane")) return;
+    if (!d.linked || !(d.lines || d.chars)) {
+      pane.innerHTML = `<p class="muted">${d.linked ? "No sentences imported for this game yet." : "No GameSentenceMiner sentences are linked to this game."} Use <b>Import from GSM</b> in the side menu.</p>`;
+      return;
+    }
+    const perHour = d.seconds > 0 ? Math.round(d.chars / (d.seconds / 3600)) : 0;
+    const items = d.items.map((i) => `<li><time>${new Date(i.ts * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time> ${esc(i.text)}</li>`).join("");
+    pane.innerHTML = `
+      <div class="stats">
+        <div class="stat"><span>Characters read</span><b>${fmt(d.chars)}</b></div>
+        <div class="stat"><span>Sentences</span><b>${fmt(d.lines)}</b></div>
+        <div class="stat"><span>Reading time</span><b>${d.seconds ? gsmHours(d.seconds) : "—"}</b></div>
+        <div class="stat"><span>Speed</span><b>${perHour ? `${fmt(perHour)}/h` : "—"}</b></div>
+        <div class="stat"><span>Days played</span><b>${fmt(d.days)}</b></div>
+        <div class="stat"><span>First – last</span><b>${gsmDate(d.first)} – ${gsmDate(d.last)}</b></div>
+      </div>
+      <input type="search" id="readingSearch" placeholder="Search sentences…" value="${esc(readingQuery)}" aria-label="Search sentences">
+      <p class="muted"><small>${fmt(d.total)} matching · showing ${fmt(offset + 1)}–${fmt(offset + d.items.length)}, newest first</small></p>
+      <ol class="reading-lines">${items || `<li class="muted">${d.live ? "Nothing matches." : "GSM only holds daily totals for this game, not the sentences."}</li>`}</ol>
+      <div class="detail-controls">
+        <button type="button" class="ghost" id="readingPrev" ${offset ? "" : "disabled"}>← Newer</button>
+        <button type="button" class="ghost" id="readingNext" ${offset + d.items.length < d.total ? "" : "disabled"}>Older →</button>
+      </div>`;
+    const search = $("#readingSearch");
+    search.onchange = () => { readingQuery = search.value.trim(); loadReading(g, 0); };
+    $("#readingPrev").onclick = () => loadReading(g, Math.max(0, offset - 100));
+    $("#readingNext").onclick = () => loadReading(g, offset + 100);
+  } catch (e) {
+    pane.innerHTML = `<p class="error">${esc(e.message)}</p>`;
+  }
 }
 
 // ---------- playthrough log (dates, hours, notes, flavour) ----------
@@ -1208,6 +1332,73 @@ async function openScan() {
   }
 }
 
+const folderAdd = { path: "", each: false };
+
+function openFolder() {
+  startImport("folder", "Add games from a folder", "");
+  renderFolderStart();
+}
+
+function renderFolderStart(note = "") {
+  $("#itchBody").innerHTML = `${folderToolsHTML()}
+    <p class="muted">${esc(note) || "Pick a game's folder, a folder full of game folders, or your Steam library. The launch file (.exe, or Steam) is detected for you."}</p>`;
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Cancel</button>`;
+  bindFolderTools();
+}
+
+function folderToolsHTML() {
+  return `<div class="itch-tools folder-tools">
+    <input type="text" id="folderPath" placeholder="C:\\Games\\My Game   (or a folder of games)" value="${esc(folderAdd.path)}" spellcheck="false">
+    <button type="button" class="ghost" id="folderBrowse">Browse…</button>
+    <button type="button" class="primary" id="folderDetect">Detect</button>
+    <button type="button" class="ghost" id="folderSteam" title="Installed games from all your Steam libraries">Steam library</button>
+    <label class="inline" title="Treat every subfolder as its own game"><input type="checkbox" id="folderEach" ${folderAdd.each ? "checked" : ""}> Each subfolder is a game</label>
+  </div>`;
+}
+
+function bindFolderTools() {
+  $("#folderPath").oninput = (e) => { folderAdd.path = e.target.value; };
+  $("#folderPath").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); detectFolder(); } };
+  $("#folderEach").onchange = (e) => { folderAdd.each = e.target.checked; };
+  $("#folderDetect").onclick = () => detectFolder();
+  $("#folderSteam").onclick = () => detectFolder(true);
+  $("#folderBrowse").onclick = async () => {
+    const btn = $("#folderBrowse");
+    btn.disabled = true;
+    try {
+      const { path } = await api("POST", "/api/folder/browse", {});
+      if (path) { folderAdd.path = path; $("#folderPath").value = path; detectFolder(); }
+    } catch (e) {
+      toast(e.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
+async function detectFolder(steam = false) {
+  if (!steam && !folderAdd.path.trim()) { toast("Choose or paste a folder first", "error"); return; }
+  itch.selected.clear();
+  $("#itchBody").innerHTML = `${folderToolsHTML()}<p class="muted">Looking for games…</p>`;
+  bindFolderTools();
+  try {
+    const q = new URLSearchParams(steam ? { steam: "1" } : { path: folderAdd.path.trim(), mode: folderAdd.each ? "each" : "auto" });
+    const res = await api("GET", `/api/folder/detect?${q}`);
+    itch.errors = res.errors;
+    itch.items = res.items.map((it) => ({
+      ...it, id: it.key, cover: "", url: "", developer: "",
+      classification: it.source === "steam" ? "steam" : "windows",
+    }));
+    itch.type = "all";
+    if (!itch.items.length) { renderFolderStart(res.errors[0] || "Nothing launchable found there."); return; }
+    // everything new starts ticked: this is the "add them all" flow
+    itch.items.filter((it) => !it.imported && !it.ignored).forEach((it) => itch.selected.add(it.id));
+    renderItchPick();
+  } catch (e) {
+    renderFolderStart(e.message);
+  }
+}
+
 async function openItch() {
   const dlg = $("#itchDialog");
   if (!state.settings.itchKeySet) {
@@ -1238,6 +1429,7 @@ function itchVisible() {
 function renderItchPick() {
   const types = [...new Set(itch.items.map((it) => it.classification))].sort();
   $("#itchBody").innerHTML = `
+    ${itch.source === "folder" ? folderToolsHTML() : ""}
     <div class="itch-tools">
       <input type="search" id="itchQ" placeholder="Search ${itch.items.length} items…" value="${esc(itch.q)}">
       <select id="itchType">
@@ -1255,6 +1447,7 @@ function renderItchPick() {
   itch.type = $("#itchType").value;
   renderItchList();
 
+  if (itch.source === "folder") bindFolderTools();
   $("#itchQ").oninput = (e) => { itch.q = e.target.value; renderItchList(); };
   $("#itchType").onchange = (e) => { itch.type = e.target.value; renderItchList(); };
   $("#itchShowImported").onchange = (e) => { itch.showImported = e.target.checked; renderItchList(); };
@@ -1262,6 +1455,10 @@ function renderItchPick() {
   $("#itchAll").onclick = () => { itchVisible().filter((it) => !it.imported && !it.ignored).forEach((it) => itch.selected.add(it.id)); renderItchList(); };
   $("#itchNone").onclick = () => { itch.selected.clear(); renderItchList(); };
   $("#itchList").onchange = (e) => {
+    if (e.target.dataset.exe) {
+      itch.items.find((x) => x.id === e.target.dataset.exe).exePath = e.target.value;
+      return;
+    }
     const id = e.target.dataset.itch;
     if (e.target.checked) itch.selected.add(id); else itch.selected.delete(id);
     renderItchPickFoot();
@@ -1271,16 +1468,26 @@ function renderItchPick() {
 function renderItchList() {
   const list = itchVisible();
   $("#itchList").innerHTML = list.map((it) => `
-    <label class="itch-row ${it.imported || it.ignored ? "done" : ""} ${itch.source === "scan" ? "has-act" : ""}" title="${esc(it.location || it.url || "")}">
+    <label class="itch-row ${it.imported || it.ignored ? "done" : ""} ${itch.source === "scan" ? "has-act" : ""} ${itch.source === "folder" && !it.imported && it.candidates.length > 1 ? "has-exe" : ""}" title="${esc(it.location || it.url || "")}">
       <input type="checkbox" data-itch="${esc(it.id)}" ${itch.selected.has(it.id) ? "checked" : ""} ${it.imported || it.ignored ? "disabled" : ""}>
       ${thumb(it.cover)}
       <span><b>${esc(it.title)}</b>
         <small>${esc([it.developer, it.classification.replace("_", " "),
-          itch.source === "itch" ? (it.purchased ? "purchased" : "bundle / claim") : "…\\" + it.location.split(/[\\/]/).slice(-2).join("\\"),
+          itch.source === "itch" ? (it.purchased ? "purchased" : "bundle / claim")
+            : itch.source === "folder" ? it.folder : "…\\" + it.location.split(/[\\/]/).slice(-2).join("\\"),
           it.imported ? "already in library" : "", it.ignored ? "ignored" : ""].filter(Boolean).join(" · "))}</small></span>
+      ${itch.source === "folder" && it.candidates.length > 1 && !it.imported ? exeSelectHTML(it) : ""}
       ${itch.source === "scan" && !it.imported ? `<button type="button" class="link" data-ignore-scan="${esc(it.id)}">${it.ignored ? "Restore" : "Ignore"}</button>` : ""}
     </label>`).join("") || `<p class="muted">Nothing matches.</p>`;
   renderItchPickFoot();
+}
+
+const sizeText = (b) => b >= 1 << 20 ? `${Math.round(b / (1 << 20))} MB` : b ? `${Math.max(1, Math.round(b / 1024))} KB` : "";
+
+function exeSelectHTML(it) {
+  return `<select data-exe="${esc(it.id)}" class="exe-pick" aria-label="Launch file for ${esc(it.title)}" title="Which file starts this game">
+    ${it.candidates.map((c) => `<option value="${esc(c.path)}" ${c.path === it.exePath ? "selected" : ""}>${esc(c.rel + (c.size ? ` (${sizeText(c.size)})` : ""))}</option>`).join("")}
+  </select>`;
 }
 
 function renderItchPickFoot() {
@@ -1346,7 +1553,7 @@ async function startItchMatch() {
   itch.rows = itch.items.filter((it) => itch.selected.has(it.id))
     .map((item, i) => ({ i, item, match: null, use: false, category: "" }));
   $("#itchBody").innerHTML = `
-    <p class="muted">Ticked matches fill in Japanese title, brand, routes and seiyuu from VNDB. Untick a wrong one to import the ${itch.source === "scan" ? "file's own title" : "itch.io details"} only.</p>
+    <p class="muted">Ticked matches fill in Japanese title, brand, routes and seiyuu from VNDB. Untick a wrong one to import the ${itch.source === "itch" ? "itch.io details" : itch.source === "folder" ? "folder's name" : "file's own title"} only.</p>
     <div class="itch-list" id="matchList">${itch.rows.map(renderMatchRow).join("")}</div>`;
   $("#matchList").onchange = (e) => {
     const t = e.target;
@@ -1418,7 +1625,9 @@ async function importItchRows() {
       const vids = rel && rel.vns.length > 1 ? rel.vns.map((v) => v.id) : row.use && row.match?.vn ? [row.match.vn.id] : [null];
       const where = itch.source === "scan"
         ? { platform: it.platform, format: "emulated", emulator: it.emulator, romPath: it.romPath, serial: it.serial, source: "scan" }
-        : { platform: "pc", format: "pc", exePath: "", itchGameId: it.itchGameId, itchUrl: it.url, source: "itch" };
+        : itch.source === "folder"
+          ? { platform: "pc", format: "pc", exePath: it.exePath, installFolder: it.folder, source: it.source, ...(it.steamAppId ? { steamAppId: it.steamAppId } : {}) }
+          : { platform: "pc", format: "pc", exePath: "", itchGameId: it.itchGameId, itchUrl: it.url, source: "itch" };
       for (const vid of vids) {
         let game = { title: it.title, brand: it.developer, cover: it.cover };
         if (vid) {
@@ -1842,13 +2051,25 @@ function vaGroups() {
       grp.roles.push({ ...c, game: g });
     }
   }
+  // The same character in several games (sequels, ports, fandiscs) is one role for that actor, listing every game
+  for (const grp of groups.values()) {
+    const merged = new Map();
+    for (const r of grp.roles) {
+      const id = (r.original || r.name || "").toLowerCase().replace(/[\s・･·.\-]/g, "") || r.game.id;
+      const m = merged.get(id);
+      if (!m) { merged.set(id, { ...r, games: [r.game] }); continue; }
+      if (!m.games.includes(r.game)) m.games.push(r.game);
+      if (!m.image && r.image) { m.image = r.image; m.nsfw = r.nsfw; }
+    }
+    grp.roles = [...merged.values()];
+  }
   return [...groups.values()]
     .filter((v) => !needle || [v.name, v.original].some((s) => (s || "").toLowerCase().includes(needle)))
     .sort((a, b) => b.roles.length - a.roles.length || (a.original || a.name).localeCompare(b.original || b.name));
 }
 
 function roleHTML(r) {
-  const label = `${r.name}${r.original ? " · " + r.original : ""} — ${r.game.title}`;
+  const label = `${r.name}${r.original ? " · " + r.original : ""} — ${r.games.map((g) => g.title).join("; ")}`;
   const letter = esc((r.name || "?")[0]);
   const face = vaUI.faces && (r.image || r.game.cover)
     ? `<img src="${esc(r.image || r.game.cover)}" alt="" loading="lazy" data-letter="${letter}">` : `<span class="face-txt">${letter}</span>`;
@@ -1868,24 +2089,81 @@ function renderVAs(host) {
   host.querySelectorAll("[data-vacat]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.vacat === vaUI.category)));
 }
 
-// ---------- pages: Timeline, Hall of Shame & Fame ----------
+// ---------- pages: Timeline, All-time Rankings ----------
 
 const openGameFrom = (el) => { const b = el.closest("[data-game]"); if (b) { detailTab = "overview"; openDetail(b.dataset.game); } };
 const dateRange = (g) => `${g.startedOn || "?"} → ${g.finishedOn || "…"}`;
 
-VIEWS.timeline = {
-  render(host) {
-    const dated = state.games.filter((g) => inDiary(g) && (g.startedOn || g.finishedOn))
-      .sort((a, b) => (a.startedOn || a.finishedOn).localeCompare(b.startedOn || b.finishedOn));
-    const undated = state.games.filter((g) => inDiary(g) && !g.startedOn && !g.finishedOn).length;
-    const byYear = new Map();
-    for (const g of dated) {
-      const y = (g.startedOn || g.finishedOn).slice(0, 4);
-      if (!byYear.has(y)) byYear.set(y, []);
-      byYear.get(y).push(g);
-    }
-    host.innerHTML = `<h2 class="page-h">Timeline</h2>
-      ${dated.length ? `<div class="trail">${[...byYear].map(([y, gs]) => `
+// ---------- Timeline: reading calendar (days played, from imported GSM sentences) + the dated-games trail ----------
+
+const tlUI = { mode: "calendar", month: "", day: "", days: null };
+const pad2 = (n) => String(n).padStart(2, "0");
+const shortChars = (n) => n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+const monthLabel = (m) => new Date(+m.slice(0, 4), +m.slice(5) - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+const shiftMonth = (m, by) => { const d = new Date(+m.slice(0, 4), +m.slice(5) - 1 + by, 1); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`; };
+const gameById = (id) => state.games.find((g) => g.id === id);
+
+function calendarHTML() {
+  const byDate = new Map((tlUI.days || []).map((d) => [d.date, d.items]));
+  const [y, m] = [+tlUI.month.slice(0, 4), +tlUI.month.slice(5)];
+  const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7; // weeks start on Monday
+  const count = new Date(y, m, 0).getDate();
+  const keys = Array.from({ length: count }, (_, i) => `${tlUI.month}-${pad2(i + 1)}`);
+  const sum = (items) => items.reduce((t, i) => ({ chars: t.chars + i.chars, lines: t.lines + i.lines, seconds: t.seconds + i.seconds }), { chars: 0, lines: 0, seconds: 0 });
+  const played = keys.filter((k) => byDate.has(k));
+  const month = sum(played.flatMap((k) => byDate.get(k)));
+  const maxChars = Math.max(1, ...played.map((k) => sum(byDate.get(k)).chars));
+  // Games started / finished on a day (from the Log tab) get a small marker
+  const marks = new Map();
+  for (const g of state.games) {
+    if (g.startedOn) marks.set(g.startedOn, [...(marks.get(g.startedOn) || []), `▶ started ${g.title}`]);
+    if (g.finishedOn) marks.set(g.finishedOn, [...(marks.get(g.finishedOn) || []), `✓ finished ${g.title}`]);
+  }
+  const today = `${new Date().getFullYear()}-${pad2(new Date().getMonth() + 1)}-${pad2(new Date().getDate())}`;
+  const cell = (k, i) => {
+    const items = byDate.get(k) || [];
+    const t = sum(items);
+    const covers = items.slice(0, 3).map((it) => { const g = gameById(it.gameId); return g ? `<span class="mini-cover" title="${esc(g.title)}">${coverHTML(g)}</span>` : ""; }).join("");
+    const mk = marks.get(k);
+    return `<button type="button" class="cal-day ${items.length ? "has" : ""} ${k === tlUI.day ? "sel" : ""} ${k === today ? "today" : ""}" data-day="${k}" style="--heat:${items.length ? Math.max(.15, t.chars / maxChars) : 0}">
+      <b>${i + 1}</b>${mk ? `<span class="cal-mark" title="${esc(mk.join("\n"))}">${mk[0].startsWith("✓") ? "✓" : "▶"}</span>` : ""}
+      ${items.length ? `<span class="cal-covers">${covers}${items.length > 3 ? `<small>+${items.length - 3}</small>` : ""}</span>
+        <small>${shortChars(t.chars)}${t.seconds ? ` · ${gsmHours(t.seconds)}` : ""}</small>` : ""}</button>`;
+  };
+  const items = byDate.get(tlUI.day) || [];
+  const dt = sum(items);
+  const panel = tlUI.day ? `<section class="cal-panel">
+      <h3>${new Date(tlUI.day + "T12:00").toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+        ${items.length ? `<small>${fmt(dt.chars)} characters · ${fmt(dt.lines)} sentences${dt.seconds ? ` · ${gsmHours(dt.seconds)}` : ""}</small>` : ""}</h3>
+      ${items.map((it) => { const g = gameById(it.gameId); return g ? `<article class="trail-item" tabindex="0" data-game="${esc(g.id)}">
+        <div class="trail-cover">${coverHTML(g)}</div>
+        <div><b>${esc(g.title)}</b><small>${fmt(it.chars)} characters · ${fmt(it.lines)} sentences${it.seconds ? ` · ${gsmHours(it.seconds)}` : ""}${it.seconds > 60 ? ` · ${fmt(Math.round(it.chars / (it.seconds / 3600)))}/h` : ""}</small></div></article>` : ""; }).join("")
+        || `<p class="muted">No reading logged this day.</p>`}
+      ${(marks.get(tlUI.day) || []).map((t) => `<p class="muted">${esc(t)}</p>`).join("")}
+    </section>` : "";
+  return `<div class="cal-head">
+      <button type="button" class="ghost" data-cal="-1" aria-label="Previous month">←</button>
+      <h3>${esc(monthLabel(tlUI.month))}</h3>
+      <button type="button" class="ghost" data-cal="1" aria-label="Next month">→</button>
+      <button type="button" class="ghost" data-cal="today">Today</button>
+      <small class="muted spacer">${played.length ? `${played.length} day${played.length === 1 ? "" : "s"} played · ${fmt(month.chars)} characters${month.seconds ? ` · ${gsmHours(month.seconds)}` : ""}` : "Nothing logged this month"}</small>
+    </div>
+    <div class="cal-grid">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => `<span class="cal-dow">${d}</span>`).join("")}
+      ${Array.from({ length: lead }, () => `<span></span>`).join("")}${keys.map(cell).join("")}</div>
+    ${panel}`;
+}
+
+function trailHTML() {
+  const dated = state.games.filter((g) => inDiary(g) && (g.startedOn || g.finishedOn))
+    .sort((a, b) => (a.startedOn || a.finishedOn).localeCompare(b.startedOn || b.finishedOn));
+  const undated = state.games.filter((g) => inDiary(g) && !g.startedOn && !g.finishedOn).length;
+  const byYear = new Map();
+  for (const g of dated) {
+    const y = (g.startedOn || g.finishedOn).slice(0, 4);
+    if (!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(g);
+  }
+  return `${dated.length ? `<div class="trail">${[...byYear].map(([y, gs]) => `
         <section class="trail-year"><h3>${esc(y)} <small>${gs.length} game${gs.length === 1 ? "" : "s"}</small></h3>
           ${gs.map((g, i) => `
           <article class="trail-item ${i % 2 ? "alt" : ""}" tabindex="0" data-game="${esc(g.id)}" title="${esc(dateRange(g))}">
@@ -1896,44 +2174,277 @@ VIEWS.timeline = {
           </article>`).join("")}
         </section>`).join("")}</div>` : `<p class="empty">No dated games yet. Add start and finish dates in a game's Log tab.</p>`}
       ${undated ? `<p class="muted">${undated} diary game${undated === 1 ? " has" : "s have"} no dates yet, so ${undated === 1 ? "it isn't" : "they aren't"} on the trail.</p>` : ""}`;
-    host.onclick = (e) => openGameFrom(e.target);
+}
+
+VIEWS.timeline = {
+  async render(host, refetch = true) {
+    if (refetch || !tlUI.days) {
+      tlUI.days = await api("GET", "/api/gsm/days").catch(() => []);
+      if (!tlUI.month) {
+        const last = tlUI.days.at(-1)?.date || new Date().toISOString().slice(0, 10);
+        tlUI.month = last.slice(0, 7);
+        tlUI.day = tlUI.days.at(-1)?.date || "";
+      }
+    }
+    const empty = !tlUI.days.length;
+    host.innerHTML = `<h2 class="page-h">Timeline</h2>
+      <div class="tabs">${[["calendar", "Calendar"], ["trail", "Trail"]].map(([k, l]) =>
+        `<button type="button" data-tlmode="${k}" aria-pressed="${tlUI.mode === k}">${l}</button>`).join("")}</div>
+      ${tlUI.mode === "trail" ? trailHTML() : `${empty ? `<p class="muted">No reading logged yet. Use <b>Import from GSM</b> in the side menu to bring in your sentences, and the days you played will show up here.</p>` : ""}${calendarHTML()}`}`;
+    const again = () => VIEWS.timeline.render(host, false);
+    host.onclick = (e) => {
+      const t = e.target.closest("button");
+      if (t?.dataset.tlmode) { tlUI.mode = t.dataset.tlmode; return again(); }
+      if (t?.dataset.cal) {
+        if (t.dataset.cal === "today") { const n = new Date(); tlUI.month = `${n.getFullYear()}-${pad2(n.getMonth() + 1)}`; tlUI.day = `${tlUI.month}-${pad2(n.getDate())}`; }
+        else tlUI.month = shiftMonth(tlUI.month, +t.dataset.cal);
+        return again();
+      }
+      if (t?.dataset.day) { tlUI.day = t.dataset.day; return again(); }
+      openGameFrom(e.target);
+    };
     host.onkeydown = (e) => { if (e.key === "Enter") openGameFrom(e.target); };
   },
 };
 
+// ---------- all-time rankings ----------
+// Named, ordered lists you can reorder any time: "Route", "Appearance", "Overall story", or anything else you add.
+// Each ranking holds games, routes (a love interest's route in one game) or characters (one card per person).
+// Stored in data/rankings.json; an item is a list of ids that all mean the same thing, so a character keeps its place
+// whether it's known by its VNDB id or by name.
+
+const RANK_KINDS = { game: "Games", route: "Routes", character: "Characters" };
+const rankStore = { lists: null, loading: null, timer: null };
+const rankUI = { q: "", adding: false, current: (() => { try { return localStorage.getItem("rankCurrent") || ""; } catch (e) { return ""; } })() };
+
+function seedRankings() {
+  const mk = (id, name, kind, note) => ({ id, name, kind, note, items: [] });
+  return [
+    mk("rank-route", "Route", "route", "Best routes of all time"),
+    mk("rank-appearance", "Appearance", "character", "Best character designs"),
+    mk("rank-story", "Overall story", "game", "Best stories"),
+  ];
+}
+
+function loadRankings() {
+  rankStore.loading ||= (async () => {
+    await loadPeople(); // characters are grouped by their VNDB ids
+    const doc = await api("GET", "/api/rankings").catch(() => ({ lists: null }));
+    rankStore.lists = doc.lists;
+    if (!rankStore.lists) { rankStore.lists = seedRankings(); await saveRankings(); }
+  })();
+  return rankStore.loading;
+}
+
+function saveRankings() {
+  clearTimeout(rankStore.timer);
+  return api("PUT", "/api/rankings", { lists: rankStore.lists })
+    .catch((e) => toast(`Couldn't save rankings: ${e.message}`, "error"));
+}
+const saveRankingsSoon = () => { clearTimeout(rankStore.timer); rankStore.timer = setTimeout(saveRankings, 250); };
+
+/** Everything that can go in a ranking of this kind: [{keys, img, label, sub, open}]. */
+function rankPool(kind) {
+  const openGame = (id) => () => { detailTab = "overview"; openDetail(id); };
+  if (kind === "game") {
+    return state.games.map((g) => ({ keys: [g.id], img: g.cover, label: g.title, sub: LABELS.status[g.status] || "", open: openGame(g.id) }));
+  }
+  if (kind === "route") {
+    return allLIs().map((x) => ({ keys: [x.key], img: x.image || x.g.cover, label: x.name, sub: x.g.title, open: openGame(x.g.id) }));
+  }
+  return [...groupCharacters(allLIs()).entries()].map(([id, ls]) => {
+    const lead = ls[0], games = [...new Set(ls.map((l) => l.g.title))];
+    return { keys: liPlacementKeys(id, ls), img: ls.find((l) => l.image)?.image || lead.g.cover, label: lead.name,
+             sub: games.length > 2 ? `${games[0]} + ${games.length - 1} more` : games.join(" · "), open: openGame(lead.g.id) };
+  });
+}
+
+/** The list's items as pool entries, in rank order; an item whose game or character is gone shows as missing. */
+function rankEntries(list, pool) {
+  const byKey = new Map();
+  for (const e of pool) for (const k of e.keys) byKey.set(k, e);
+  const seen = new Set();
+  return list.items.map((keys) => {
+    const e = keys.map((k) => byKey.get(k)).find(Boolean);
+    if (e && seen.has(e)) return null; // the same card twice (a character matched by two ids)
+    if (e) seen.add(e);
+    return { keys, entry: e || { keys, img: "", label: "(no longer in your library)", sub: "", open: null, missing: true } };
+  }).filter(Boolean);
+}
+
+function openRankEditor(list, done) {
+  let dlg = $("#rankDialog");
+  if (!dlg) {
+    document.body.insertAdjacentHTML("beforeend", `<dialog id="rankDialog" class="sheet"></dialog>`);
+    dlg = $("#rankDialog");
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+  }
+  const locked = list && list.items.length;
+  dlg.innerHTML = `
+    <form method="dialog" id="rankForm">
+      <header class="sheet-head"><h2>${list ? "Edit ranking" : "New ranking"}</h2>
+        <button type="button" class="icon" data-close aria-label="Close">✕</button></header>
+      <label>Name <input id="rkName" value="${esc(list ? list.name : "")}" maxlength="60" placeholder="e.g. Soundtrack, Plot twists, Best romance"></label>
+      <label>Description <input id="rkNote" value="${esc(list ? list.note : "")}" maxlength="200" placeholder="optional"></label>
+      <label>What do you rank?
+        <select id="rkKind" ${locked ? `disabled title="Empty the ranking first to change this"` : ""}>
+          ${Object.entries(RANK_KINDS).map(([k, l]) => `<option value="${k}" ${list && list.kind === k ? "selected" : ""}>${l}</option>`).join("")}
+        </select></label>
+      <footer class="sheet-foot">
+        ${list ? `<button type="button" class="ghost danger" data-delete style="margin-right:auto">Delete this ranking</button>` : ""}
+        <button type="button" class="ghost" data-close>Cancel</button>
+        <button type="submit" class="primary">${list ? "Save" : "Create"}</button>
+      </footer>
+    </form>`;
+  dlg.onclick = (e) => {
+    if (e.target === dlg) return dlg.close();
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.hasAttribute("data-close")) return dlg.close();
+    if (b.hasAttribute("data-delete")) {
+      if (!confirm(`Delete “${list.name}”${list.items.length ? ` and its ${list.items.length} entries` : ""}? Your games and characters aren't touched.`)) return;
+      rankStore.lists = rankStore.lists.filter((l) => l.id !== list.id);
+      saveRankings();
+      dlg.close();
+      done();
+    }
+  };
+  dlg.onsubmit = async (e) => {
+    e.preventDefault();
+    const name = $("#rkName", dlg).value.trim();
+    if (!name) return toast("Give the ranking a name", "error");
+    const note = $("#rkNote", dlg).value.trim(), kind = $("#rkKind", dlg).value;
+    if (list) { list.name = name; list.note = note; if (!list.items.length) list.kind = kind; }
+    else {
+      const fresh = { id: `r_${Date.now().toString(36)}`, name, kind, note, items: [] };
+      rankStore.lists.push(fresh);
+      rankUI.current = fresh.id;
+      try { localStorage.setItem("rankCurrent", fresh.id); } catch (err) {}
+    }
+    await saveRankings();
+    dlg.close();
+    done();
+  };
+  dlg.showModal();
+}
+
 VIEWS.hall = {
   async render(host) {
-    await loadTierLists();
-    const topTier = new Set(); // games in the top tier of any game tier list
-    for (const l of tierStore.lists.filter((x) => x.kind === "game")) {
-      for (const [id, t] of Object.entries(l.placements)) if (t === l.tiers[0].id) topTier.add(id);
+    const view = host.dataset.view;
+    host.innerHTML = `<h2 class="page-h">All-time Rankings</h2><p class="empty">Loading…</p>`;
+    await Promise.all([loadPeople(), loadRankings()]);
+    if (currentView !== view) return;
+    const redraw = () => VIEWS.hall.render(host);
+    const lists = rankStore.lists;
+    const list = lists.find((l) => l.id === rankUI.current) || lists[0];
+    if (!list) {
+      host.innerHTML = `<h2 class="page-h">All-time Rankings</h2><p class="empty">No rankings yet.</p>
+        <button class="primary" id="rkNew">＋ New ranking</button>`;
+      host.querySelector("#rkNew").onclick = () => openRankEditor(null, redraw);
+      return;
     }
-    const labels = (g) => g.vndbLabels || [];
-    const shame = state.games.filter((g) => g.status === "dropped" || labels(g).includes("Dropped") || labels(g).includes("Stalled"));
-    const fame = state.games.filter((g) => g.rating >= 5 || g.vndbVote >= 90 || topTier.has(g.id))
-      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
-    const stone = (g) => `
-      <article class="stone" tabindex="0" data-game="${esc(g.id)}">
-        <div class="trail-cover">${coverHTML(g)}</div>
-        <b>${esc(g.title)}</b>
-        <small>${labels(g).includes("Stalled") && g.status !== "dropped" ? "paused" : "dropped"}${g.finishedOn || g.startedOn ? ` · ${esc(g.finishedOn || g.startedOn)}` : ""}</small>
-        ${g.bad ? `<small class="epitaph">${esc(g.bad.length > 90 ? g.bad.slice(0, 90) + "…" : g.bad)}</small>` : ""}
-      </article>`;
-    const gold = (g) => `
-      <article class="stone gold" tabindex="0" data-game="${esc(g.id)}">
-        <div class="trail-cover">${coverHTML(g)}</div>
-        <b>${esc(g.title)}</b>
-        <small>${g.rating ? "★".repeat(g.rating) : g.vndbVote ? `${g.vndbVote / 10}/10 on VNDB` : "top tier"}</small>
-      </article>`;
-    host.innerHTML = `<h2 class="page-h">Hall of Shame &amp; Fame</h2>
-      <h3 class="hall-h">🏆 Hall of Fame <small>${fame.length}</small></h3>
-      <p class="muted">Games you rated 5 stars, voted 9+ on VNDB, or put in the top tier of a game tier list.</p>
-      <div class="stones">${fame.map(gold).join("") || `<p class="empty">Nothing here yet.</p>`}</div>
-      <h3 class="hall-h">🪦 Hall of Shame <small>${shame.length}</small></h3>
-      <p class="muted">Dropped or paused games (set the status in a game, or on VNDB and re-sync).</p>
-      <div class="stones">${shame.map(stone).join("") || `<p class="empty">Nothing dropped. Impressive.</p>`}</div>`;
-    host.onclick = (e) => openGameFrom(e.target);
-    host.onkeydown = (e) => { if (e.key === "Enter") openGameFrom(e.target); };
+    const pool = rankPool(list.kind);
+    const pick = (id) => { rankUI.current = id; rankUI.q = ""; try { localStorage.setItem("rankCurrent", id); } catch (e) {} redraw(); };
+    const noun = list.kind === "route" ? "a route" : list.kind === "character" ? "a character" : "a game";
+
+    host.innerHTML = `<h2 class="page-h">All-time Rankings</h2>
+      <div class="filters page-filters">
+        <div class="filter-group"><b>Ranking</b>
+          ${lists.map((l) => `<button class="chip" data-rk="${esc(l.id)}" aria-pressed="${l.id === list.id}">${esc(l.name)}<span class="n">${l.items.length}</span></button>`).join("")}
+          <button class="chip" data-rknew title="Make a new ranking">＋ New</button>
+          <button class="chip" data-rkedit title="Rename this ranking or change what it ranks">⚙ Edit</button>
+        </div>
+      </div>
+      <p class="muted">${esc(list.note || "")}${list.note ? " · " : ""}Ranking ${RANK_KINDS[list.kind].toLowerCase()}. Drag to reorder, or type a new position.</p>
+      <div id="rkList" class="rank-list"></div>
+      <div class="rank-add">
+        <button class="ghost" id="rkToggle">${rankUI.adding ? "Done adding" : `＋ Add ${noun}`}</button>
+        <div id="rkAdder" ${rankUI.adding ? "" : "hidden"}>
+          <input id="rkSearch" type="search" placeholder="Search to add…" value="${esc(rankUI.q)}" autocomplete="off">
+          <div id="rkPool" class="rank-pool"></div>
+        </div>
+      </div>`;
+    host.querySelectorAll("[data-rk]").forEach((b) => b.onclick = () => pick(b.dataset.rk));
+    host.querySelector("[data-rknew]").onclick = () => openRankEditor(null, redraw);
+    host.querySelector("[data-rkedit]").onclick = () => openRankEditor(list, redraw);
+
+    const listEl = host.querySelector("#rkList"), poolEl = host.querySelector("#rkPool");
+    const change = () => {
+      saveRankingsSoon(); drawList(); drawPool();
+      host.querySelector(`[data-rk="${CSS.escape(list.id)}"] .n`).textContent = list.items.length;
+    };
+    const move = (from, to) => {
+      to = Math.max(0, Math.min(list.items.length - 1, to));
+      if (from === to) return;
+      list.items.splice(to, 0, list.items.splice(from, 1)[0]);
+      change();
+    };
+
+    function drawList() {
+      const rows = rankEntries(list, pool);
+      list.items = rows.map((r) => r.keys); // drops accidental duplicates
+      listEl.innerHTML = rows.length ? rows.map((r, n) => `
+        <article class="rank-row ${n < 3 ? `top top${n + 1}` : ""} ${r.entry.missing ? "missing" : ""}" draggable="true" data-i="${n}">
+          <input class="rank-no" type="number" min="1" max="${rows.length}" value="${n + 1}" aria-label="Position">
+          <div class="trail-cover">${portraitHTML(r.entry.img, r.entry.label)}</div>
+          <div class="rank-text"><b>${esc(r.entry.label)}</b><small>${esc(r.entry.sub)}</small></div>
+          <div class="rank-btns">
+            <button type="button" class="ghost" data-up ${n ? "" : "disabled"} aria-label="Move up">▲</button>
+            <button type="button" class="ghost" data-down ${n < rows.length - 1 ? "" : "disabled"} aria-label="Move down">▼</button>
+            <button type="button" class="ghost danger" data-rm aria-label="Remove">✕</button>
+          </div>
+        </article>`).join("") : `<p class="empty">Nothing ranked yet. Use “Add” below to start your list.</p>`;
+      listEl._rows = rows;
+    }
+    function drawPool() {
+      const taken = new Set(list.items.flat());
+      const needle = rankUI.q.trim().toLowerCase();
+      const hits = pool.filter((e) => !e.keys.some((k) => taken.has(k)) && (!needle || `${e.label} ${e.sub}`.toLowerCase().includes(needle)))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      poolEl.innerHTML = hits.length
+        ? hits.slice(0, 40).map((e, n) => `<button type="button" class="rank-pick ghost" data-n="${n}"><span class="trail-cover">${portraitHTML(e.img, e.label)}</span>
+            <span><b>${esc(e.label)}</b><small>${esc(e.sub)}</small></span></button>`).join("") + (hits.length > 40 ? `<small class="muted">${hits.length - 40} more — keep typing to narrow it down.</small>` : "")
+        : `<p class="empty">${needle ? "No match." : "Everything is already ranked."}</p>`;
+      poolEl._hits = hits;
+    }
+    drawList();
+    drawPool();
+
+    host.querySelector("#rkToggle").onclick = () => { rankUI.adding = !rankUI.adding; redraw(); };
+    host.querySelector("#rkSearch").oninput = (e) => { rankUI.q = e.target.value; drawPool(); };
+    poolEl.onclick = (e) => {
+      const b = e.target.closest(".rank-pick");
+      if (!b) return;
+      list.items.push(poolEl._hits[+b.dataset.n].keys);
+      change();
+    };
+    listEl.onclick = (e) => {
+      const row = e.target.closest(".rank-row");
+      if (!row) return;
+      const i = +row.dataset.i;
+      if (e.target.closest("[data-up]")) return move(i, i - 1);
+      if (e.target.closest("[data-down]")) return move(i, i + 1);
+      if (e.target.closest("[data-rm]")) { list.items.splice(i, 1); return change(); }
+      if (e.target.closest(".rank-no, button")) return;
+      const open = listEl._rows[i].entry.open;
+      if (open) open();
+    };
+    listEl.onchange = (e) => {
+      const row = e.target.closest(".rank-row");
+      if (!row || !e.target.classList.contains("rank-no")) return;
+      move(+row.dataset.i, (parseInt(e.target.value, 10) || 1) - 1);
+    };
+    let dragFrom = null;
+    listEl.ondragstart = (e) => { const r = e.target.closest(".rank-row"); if (r) { dragFrom = +r.dataset.i; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(dragFrom)); } };
+    listEl.ondragover = (e) => { const r = e.target.closest(".rank-row"); if (r && dragFrom != null) { e.preventDefault(); listEl.querySelectorAll(".over").forEach((x) => x.classList.remove("over")); r.classList.add("over"); } };
+    listEl.ondrop = (e) => {
+      const r = e.target.closest(".rank-row");
+      if (!r || dragFrom == null) return;
+      e.preventDefault();
+      const from = dragFrom; dragFrom = null;
+      move(from, +r.dataset.i);
+    };
+    listEl.ondragend = () => { dragFrom = null; listEl.querySelectorAll(".over").forEach((x) => x.classList.remove("over")); };
   },
 };
 
@@ -1950,7 +2461,6 @@ const DEFAULT_TIERS = [
 const tierUI = {
   category: "", size: +(() => { try { return localStorage.getItem("tierSize"); } catch (e) { return 0; } })() || 84,
   current: (() => { try { return JSON.parse(localStorage.getItem("tierCurrent")) || {}; } catch (e) { return {}; } })(),
-  allGames: (() => { try { return localStorage.getItem("tierAllGames") === "1"; } catch (e) { return false; } })(),
 };
 const liUI = { q: "", category: "", sort: "score", unratedOnly: false };
 
@@ -2067,8 +2577,17 @@ const tierOf = (list, keys) => {
   return hit || "";
 };
 
-function placeItem(list, keys, tierId) {
+/** Put an item in a tier (or Unranked with ""), in front of the item `beforeKey`, or last in its tier when that's null.
+ *  list.order is one list of item keys; a tier shows its items in that order, so only relative order matters. */
+function placeItem(list, keys, tierId, itemKey, beforeKey = null, shown = []) {
   for (const k of keys) { if (tierId) list.placements[k] = tierId; else delete list.placements[k]; }
+  if (itemKey) {
+    const order = (list.order || []).filter((k) => k !== itemKey);
+    for (const k of shown) if (k !== itemKey && !order.includes(k)) order.push(k); // pin the order you can currently see
+    const at = beforeKey ? order.indexOf(beforeKey) : -1;
+    if (at < 0) order.push(itemKey); else order.splice(at, 0, itemKey);
+    list.order = order;
+  }
   saveTierListsSoon();
 }
 
@@ -2088,16 +2607,43 @@ function renderTierBoard(host, items, tiers, { setTier, open }) {
   const board = host.querySelector(".tier-board");
   let dragKey = null;
   board.ondragstart = (e) => { const c = e.target.closest(".tier-card"); if (c) { dragKey = c.dataset.key; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", dragKey); } };
-  board.ondragover = (e) => { const r = e.target.closest(".tier-row"); if (r && dragKey) { e.preventDefault(); r.classList.add("over"); } };
-  board.ondragleave = (e) => e.target.closest(".tier-row")?.classList.remove("over");
-  board.ondrop = (e) => {
+  const clearMarks = () => board.querySelectorAll(".over, .before").forEach((x) => x.classList.remove("over", "before"));
+  /** Where a drop would land: the card it goes in front of (null = last in the row). Left half of a card = before it. */
+  const dropSpot = (e) => {
     const r = e.target.closest(".tier-row");
-    if (!r || !dragKey) return;
+    if (!r) return null;
+    const cards = [...r.querySelectorAll(".tier-card")].filter((c) => c.dataset.key !== dragKey);
+    const over = e.target.closest(".tier-card");
+    let before = null;
+    if (over && over.dataset.key !== dragKey) {
+      const b = over.getBoundingClientRect();
+      before = e.clientX < b.left + b.width / 2 ? over : cards[cards.indexOf(over) + 1] || null;
+    }
+    return { row: r, before };
+  };
+  board.ondragover = (e) => {
+    if (!dragKey) return;
+    const d = dropSpot(e);
+    if (!d) return;
+    e.preventDefault();
+    clearMarks();
+    d.row.classList.add("over");
+    d.before?.classList.add("before");
+  };
+  board.ondragleave = (e) => { if (!board.contains(e.relatedTarget)) clearMarks(); };
+  board.ondrop = (e) => {
+    if (!dragKey) return;
+    const d = dropSpot(e);
+    if (!d) return;
     e.preventDefault();
     const key = dragKey; dragKey = null;
-    if (byKey[key] && byKey[key].tier !== r.dataset.tier) setTier(byKey[key], r.dataset.tier);
+    clearMarks();
+    if (!byKey[key]) return;
+    const beforeKey = d.before ? d.before.dataset.key : null;
+    if (beforeKey === key) return;
+    setTier(byKey[key], d.row.dataset.tier, beforeKey);
   };
-  board.ondragend = () => { dragKey = null; board.querySelectorAll(".over").forEach((x) => x.classList.remove("over")); };
+  board.ondragend = () => { dragKey = null; clearMarks(); };
   board.onclick = (e) => {
     const c = e.target.closest(".tier-card");
     if (!c) return;
@@ -2119,7 +2665,7 @@ function renderTierBoard(host, items, tiers, { setTier, open }) {
       const b = ev.target.closest("button");
       if (!b) return;
       close();
-      if (b.hasAttribute("data-open")) open(it); else setTier(it, b.dataset.t);
+      if (b.hasAttribute("data-open")) open(it); else if (b.dataset.t !== it.tier) setTier(it, b.dataset.t);
     };
   };
 }
@@ -2212,7 +2758,8 @@ function openTierEditor(kind, list, done) {
     if (list) {
       Object.assign(list, { name, tiers, placements: keep(list.placements) });
     } else {
-      const fresh = { id: `l_${Date.now().toString(36)}`, kind, name, tiers, placements: draft.copy && current ? keep({ ...current.placements }) : {} };
+      const fresh = { id: `l_${Date.now().toString(36)}`, kind, name, tiers, placements: draft.copy && current ? keep({ ...current.placements }) : {},
+        order: draft.copy && current ? [...(current.order || [])] : [] };
       tierStore.lists.push(fresh);
       tierUI.current[kind] = fresh.id;
       try { localStorage.setItem("tierCurrent", JSON.stringify(tierUI.current)); } catch (err) {}
@@ -2240,7 +2787,6 @@ function tierControls(host, kind, lists, list, onChange) {
         <button class="chip" data-tcat="" aria-pressed="${!tierUI.category}">All</button>
         ${Object.entries(LABELS.category).map(([k, l]) => `<button class="chip" data-tcat="${k}" aria-pressed="${tierUI.category === k}">${l}</button>`).join("")}
       </div>
-      ${kind === "game" ? `<label class="inline"><input type="checkbox" id="tierAllGames" ${tierUI.allGames ? "checked" : ""}> include unplayed &amp; unfinished games</label>` : ""}
       <label class="inline">size <input type="range" id="tierSize" min="48" max="140" step="4" value="${tierUI.size}"> <output>${tierUI.size}px</output></label>
       <small>Drag a card onto a tier, or click it for a menu.</small>
     </div>`);
@@ -2252,8 +2798,6 @@ function tierControls(host, kind, lists, list, onChange) {
   host.querySelector("[data-tnew]").onclick = () => openTierEditor(kind, null, onChange);
   host.querySelector("[data-tedit]").onclick = () => openTierEditor(kind, list, onChange);
   host.querySelectorAll("[data-tcat]").forEach((b) => b.onclick = () => { tierUI.category = b.dataset.tcat; onChange(); });
-  const all = host.querySelector("#tierAllGames");
-  if (all) all.onchange = () => { tierUI.allGames = all.checked; try { localStorage.setItem("tierAllGames", all.checked ? "1" : "0"); } catch (e) {} onChange(); };
   const size = host.querySelector("#tierSize");
   size.oninput = () => { tierUI.size = +size.value; size.nextElementSibling.textContent = `${size.value}px`;
     host.querySelector(".tier-board")?.style.setProperty("--sz", `${size.value}px`);
@@ -2281,11 +2825,13 @@ function tierPage(kind, title, empty, build) {
       board.id = "tierBoardHost";
       host.append(board);
       const items = build(list);
+      const ord = new Map((list.order || []).map((k, i) => [k, i]));
+      items.sort((a, b) => (ord.get(a.key) ?? 1e9) - (ord.get(b.key) ?? 1e9)); // stable: unplaced items keep their usual order
       host.querySelector("[data-texport]").onclick = () => items.length ? openTierExport(list, items) : toast("Nothing to export yet", "error");
       if (!items.length) { board.innerHTML = `<p class="empty">${esc(empty)}</p>`; return; }
       const y = scrollY;
       renderTierBoard(board, items, list.tiers, {
-        setTier: (it, tierId) => { placeItem(list, it.keys, tierId); redraw().then(() => scrollTo(0, y)); },
+        setTier: (it, tierId, beforeKey = null) => { placeItem(list, it.keys, tierId, it.key, beforeKey, items.map((x) => x.key)); redraw().then(() => scrollTo(0, y)); },
         open: (it) => it.open(),
       });
     },
@@ -2306,34 +2852,39 @@ VIEWS.litiers = tierPage("li", "LI Tier List", "No love interests yet. Sync your
 });
 
 VIEWS.gametiers = tierPage("game", "Game Tier List", "No games yet.", (list) => {
-  const placed = (g) => list.placements[g.id];
-  return state.games.filter((g) => (!tierUI.category || g.category === tierUI.category) && (tierUI.allGames || inDiary(g) || placed(g)))
+  return state.games.filter((g) => !tierUI.category || g.category === tierUI.category)
     .map((g) => ({ key: g.id, keys: [g.id], tier: tierOf(list, [g.id]), img: g.cover, label: g.title, sub: LABELS.status[g.status] || "",
                    open: () => { detailTab = "overview"; openDetail(g.id); } }));
 });
 
-function liCardHTML(l) {
-  return `<article class="li-card" data-key="${esc(l.key)}">
-    <button type="button" class="li-face" data-opengame="${esc(l.g.id)}" title="Open ${esc(l.g.title)}">${portraitHTML(l.image || l.g.cover, l.name)}</button>
+/** One card per character: the same person in several games (sequels, ports, fandiscs) shows once, with a score per game. */
+function liCardHTML(ls) {
+  const lead = ls[0];
+  const va = (ls.find((l) => l.va) || {}).va;
+  const original = (ls.find((l) => l.original) || {}).original;
+  const image = (ls.find((l) => l.image) || {}).image || lead.g.cover;
+  return `<article class="li-card">
+    <button type="button" class="li-face" data-opengame="${esc(lead.g.id)}" title="Open ${esc(lead.g.title)}">${portraitHTML(image, lead.name)}</button>
     <div class="li-body">
-      <b>${esc(l.name)}</b>${l.original ? `<small>${esc(l.original)}</small>` : ""}
-      <small>${esc(l.g.title)}${l.va ? ` · CV ${esc(l.va)}` : ""}</small>
-      <div class="li-edit">
+      <b>${esc(lead.name)}</b>${original ? `<small>${esc(original)}</small>` : ""}${va ? `<small>CV ${esc(va)}</small>` : ""}
+      ${ls.map((l) => `<div class="li-game">
+        <button type="button" class="li-gname" data-opengame="${esc(l.g.id)}" title="Open ${esc(l.g.title)}">${esc(l.g.title)}</button>
         <label>score <input type="number" min="0" max="10" step="0.5" data-score="${esc(l.key)}" value="${l.score ?? ""}" placeholder="–"></label>
-      </div>
+      </div>`).join("")}
     </div>
   </article>`;
 }
 
 function renderLIs(host) {
   const needle = liUI.q.trim().toLowerCase();
-  let list = allLIs().filter((l) => (!liUI.category || l.g.category === liUI.category) &&
-    (!liUI.unratedOnly || l.score == null) &&
-    (!needle || [l.name, l.original, l.va, l.g.title].some((s) => (s || "").toLowerCase().includes(needle))));
+  const matches = (l) => [l.name, l.original, l.va, l.g.title].some((s) => (s || "").toLowerCase().includes(needle));
+  let list = [...groupCharacters(allLIs().filter((l) => !liUI.category || l.g.category === liUI.category)).values()]
+    .filter((ls) => (!liUI.unratedOnly || ls.some((l) => l.score == null)) && (!needle || ls.some(matches)));
+  const best = (ls) => Math.max(...ls.map((l) => l.score ?? -1));
   const sorters = {
-    score: (a, b) => (b.score ?? -1) - (a.score ?? -1) || a.name.localeCompare(b.name),
-    name: (a, b) => a.name.localeCompare(b.name),
-    game: (a, b) => a.g.title.localeCompare(b.g.title),
+    score: (a, b) => best(b) - best(a) || a[0].name.localeCompare(b[0].name),
+    name: (a, b) => a[0].name.localeCompare(b[0].name),
+    game: (a, b) => a[0].g.title.localeCompare(b[0].g.title),
   };
   list.sort(sorters[liUI.sort]);
   host.querySelector("#liList").innerHTML = list.length ? list.map(liCardHTML).join("") : `<p class="empty">No love interests match.</p>`;
@@ -2416,8 +2967,30 @@ $("#addBtn").onclick = () => openEdit(null);
 $("#settingsBtn").onclick = openSettings;
 $("#itchBtn").onclick = openItch;
 $("#scanBtn").onclick = openScan;
+$("#folderBtn").onclick = openFolder;
+$("#addFolderBtn").onclick = openFolder;
 $("#checkBtn").onclick = openCheck;
 $("#dlcBtn").onclick = openDlc;
+$("#gsmBtn").onclick = openGsm;
+$("#restartBtn").onclick = async () => {
+  if (!confirm("Restart the library? The page reloads in a few seconds.")) return;
+  try {
+    await api("POST", "/api/restart");
+  } catch (e) {
+    return toast(e.message, "error");
+  }
+  toast("Restarting…");
+  // Wait for the old server to go and the new one to answer, then reload
+  let down = false;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      await fetch("/api/settings", { cache: "no-store" });
+      if (down || i >= 8) return location.reload(); // up again (or never seen down: it restarted fast)
+    } catch { down = true; }
+  }
+  toast("The library didn't come back. Start it with start-library.bat.", "error");
+};
 $("#search").addEventListener("input", (e) => { state.filter.q = e.target.value; render(); });
 $("#sort").onchange = (e) => { state.sort = e.target.value; render(); };
 

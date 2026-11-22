@@ -23,6 +23,8 @@ Launch targets: a PC `.exe` / `.lnk` / `steam://` URL, or an emulator + game fil
 click **itch.io**. Tick games, match them on VNDB (exact store link → same title → possible guess),
 pick categories, import. The key stays in `data/settings.json` and is never sent to the page.
 
+**Add from folder (Windows / Steam games):** click **Add from folder**, then **Browse...** to a game's folder, a folder of game folders, or press **Steam library**. It finds the launch file for you (skipping uninstallers, redistributables and crash handlers), or launches through Steam (`steam://rungameid/<id>`) for Steam installs, which are recognised from their `appmanifest` files. Pick a different file from the dropdown if the guess is wrong, then match on VNDB and import like the other imports.
+
 **Scan folders (emulated games):** list game folders under each emulator in Settings, then click
 **Scan folders**. Finds PSP ISO/CSO/CHD/EBOOT.PBP, Switch NSP/XCI, and Vita3K installed apps
 (`ux0\app\<TITLE_ID>`). PSP ISOs, EBOOTs and Vita apps carry their real title and serial, and VNDB
@@ -32,6 +34,10 @@ matches serials exactly. Vita games launch by title ID (`-r {rom}`).
 When a file matches a game already on your VNDB list (imported with the list sync), ticking it links the file
 to that entry instead of creating a duplicate. Bundles link every game they contain. Rows that aren't on your
 list or didn't match are only reported; use **Scan folders** to import those.
+
+**Import from GSM (GameSentenceMiner):** click **Import from GSM** to copy the sentences GSM has logged into the library. Each GSM game is matched to a library game by VNDB id, then exact title; anything else you pick by hand or skip. GSM's database (`%APPDATA%\GameSentenceMiner\gsm.db`, or `gsmDbPath` in `data/settings.json`) is opened read-only and never changed. Sentences are stored in `data/gsm_lines.db`; importing again adds only new lines. Each game's **Reading** tab shows characters, sentences, reading time, speed and a searchable sentence list.
+
+**Timeline calendar:** the Timeline page opens as a month calendar of the days you read, built from the sentences imported from GSM. Each day shows the games played, characters and reading time; click a day for the per-game breakdown and speed. Start and finish dates from a game's Log tab appear as ▶ / ✓ markers. Reading time is GSM's own daily figure after an import, otherwise estimated from the gaps between sentences (gaps over 3 minutes are ignored). The old dated-games list is under the **Trail** tab.
 
 **Japanese study (Jiten):** each game has a **Study** tab, and the **Study** button in the top bar opens a library-wide
 view. Games match on [jiten.moe](https://jiten.moe) by VNDB id (exact), then exact title; anything fuzzy is offered as

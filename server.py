@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -30,7 +31,10 @@ GAMES_FILE = DATA / "games.json"
 SETTINGS_FILE = DATA / "settings.json"
 CHARACTERS_FILE = DATA / "characters.json"  # VNDB character id -> record (fetched data only)
 STAFF_FILE = DATA / "staff.json"            # VNDB staff id -> voice actor record
+GSM_LINES_DB = DATA / "gsm_lines.db"        # sentences imported from GameSentenceMiner (our own copy)
+GSM_LINKS_FILE = DATA / "gsm_links.json"    # GSM game id -> library game id (null = ignored)
 TIERLISTS_FILE = DATA / "tierlists.json"    # the user's tier lists: names, tiers (name + colour) and placements
+RANKINGS_FILE = DATA / "rankings.json"      # the user's all-time rankings: named, ordered lists of games / routes / characters
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", 9999))  # 8765 is taken by AnkiConnect
@@ -52,6 +56,7 @@ DEFAULT_SETTINGS = {
 }
 
 lock = threading.Lock()
+restart = {"requested": False}  # set by the Restart button; main() relaunches after the server stops
 
 
 # ---------- storage ----------
@@ -242,6 +247,217 @@ def launch(game, settings):
         subprocess.Popen([str(exe), *args], cwd=str(exe.parent))
     else:
         raise ValueError("Physical copies can't be launched.")
+
+
+# ---------- GameSentenceMiner (read-only import of logged sentences) ----------
+
+def gsm_db_path(settings=None):
+    custom = ((settings or load_settings()).get("gsmDbPath") or "").strip().strip('"')
+    return Path(custom) if custom else Path(os.environ.get("APPDATA", "")) / "GameSentenceMiner" / "gsm.db"
+
+
+def gsm_open():
+    """GSM's database, opened read-only. GSM keeps it open, so we never write to it."""
+    path = gsm_db_path()
+    if not path.is_file():
+        raise ValueError(f"GSM database not found at {path}. Set its location in data/settings.json (gsmDbPath).")
+    db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=10)
+    db.row_factory = sqlite3.Row
+    return db
+
+
+def gsm_store():
+    DATA.mkdir(exist_ok=True)
+    db = sqlite3.connect(GSM_LINES_DB, timeout=10)
+    db.row_factory = sqlite3.Row
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS lines (id TEXT PRIMARY KEY, game_id TEXT, gsm_game_id TEXT, ts REAL, text TEXT);
+        CREATE INDEX IF NOT EXISTS lines_game ON lines (game_id, ts);
+        CREATE TABLE IF NOT EXISTS stats (gsm_game_id TEXT PRIMARY KEY, seconds REAL, cards INTEGER, days INTEGER);
+        CREATE TABLE IF NOT EXISTS daily (gsm_game_id TEXT, date TEXT, seconds REAL, PRIMARY KEY (gsm_game_id, date));
+        -- daily totals GSM holds for older reading imported from another tracker (no sentence text)
+        CREATE TABLE IF NOT EXISTS archive (gsm_game_id TEXT, date TEXT, chars INTEGER, lines INTEGER, seconds REAL, PRIMARY KEY (gsm_game_id, date));
+    """)
+    return db
+
+
+def gsm_suggest(g, games):
+    """Best library match for a GSM game: VNDB id, then exact title, then nothing."""
+    vid = (g["vndb_id"] or "").strip()
+    if vid:
+        hit = next((x for x in games if x.get("vndbId") == vid), None)
+        if hit:
+            return hit["id"], "vndb"
+    names = {normalise(n) for n in (g["title_original"], g["title_romaji"], g["title_english"], g["obs_scene_name"]) if n}
+    names.discard("")
+    for x in games:
+        if names & ({normalise(x.get("title")), normalise(x.get("originalTitle"))} - {""}):
+            return x["id"], "title"
+    return None, ""
+
+
+def gsm_third_party(src, gsm_id=None):
+    """GSM's `third_party_stats`: per-day totals imported from other trackers. Empty if this GSM version has no such table."""
+    try:
+        if gsm_id is None:
+            return src.execute("""SELECT game_id, COUNT(DISTINCT date) days, SUM(CAST(characters_read AS INTEGER)) chars,
+                                         SUM(CAST(time_read_seconds AS REAL)) seconds
+                                  FROM third_party_stats WHERE game_id IS NOT NULL GROUP BY game_id""").fetchall()
+        return src.execute("""SELECT date, SUM(CAST(characters_read AS INTEGER)) chars, SUM(CAST(lines_read AS INTEGER)) lines,
+                                     SUM(CAST(time_read_seconds AS REAL)) seconds
+                              FROM third_party_stats WHERE game_id = ? GROUP BY date""", (gsm_id,)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
+def gsm_games():
+    """Every GSM game with its sentence count, the suggested/chosen library match and how much is already imported."""
+    links = read_json(GSM_LINKS_FILE, {})
+    games = load_games()
+    src = gsm_open()
+    try:
+        rows = src.execute("""
+            SELECT g.id, g.title_original, g.title_romaji, g.title_english, g.vndb_id, g.obs_scene_name,
+                   COUNT(l.id) AS lines, COALESCE(SUM(LENGTH(l.line_text)), 0) AS chars,
+                   MIN(l.timestamp) AS first, MAX(l.timestamp) AS last
+            FROM games g LEFT JOIN game_lines l ON l.game_id = g.id GROUP BY g.id ORDER BY lines DESC""").fetchall()
+        old = {r["game_id"]: r for r in gsm_third_party(src)}
+    finally:
+        src.close()
+    store = gsm_store()
+    imported = {r["gsm_game_id"]: r["n"] for r in store.execute("SELECT gsm_game_id, COUNT(*) n FROM lines GROUP BY gsm_game_id")}
+    store.close()
+    out = []
+    for r in rows:
+        suggested, how = gsm_suggest(r, games)
+        out.append({
+            "id": r["id"], "title": r["title_original"] or r["title_english"] or r["obs_scene_name"] or "(untitled)",
+            "romaji": r["title_romaji"] or r["title_english"] or "", "vndbId": r["vndb_id"] or "",
+            "lines": r["lines"], "chars": r["chars"], "first": r["first"], "last": r["last"],
+            "oldChars": old[r["id"]]["chars"] if r["id"] in old else 0,
+            "oldDays": old[r["id"]]["days"] if r["id"] in old else 0,
+            "oldSeconds": old[r["id"]]["seconds"] if r["id"] in old else 0,
+            "imported": imported.get(r["id"], 0),
+            "linked": links.get(r["id"]) if r["id"] in links else None,   # None: not decided yet; "" / null saved = skipped
+            "decided": r["id"] in links,
+            "suggested": suggested, "suggestedBy": how,
+        })
+    return out
+
+
+def gsm_import(choices):
+    """choices: {gsmGameId: libraryGameId or null}. Saves the links, then copies new sentences (re-runnable)."""
+    games = {g["id"] for g in load_games()}
+    links = read_json(GSM_LINKS_FILE, {})
+    for gsm_id, lib_id in (choices or {}).items():
+        if lib_id and lib_id not in games:
+            raise ValueError("That library game doesn't exist any more.")
+        links[str(gsm_id)] = lib_id or None
+    write_json(GSM_LINKS_FILE, links)
+    added = 0
+    store = gsm_store()
+    src = gsm_open()
+    try:
+        with store:
+            for gsm_id, lib_id in links.items():
+                if not lib_id:
+                    continue
+                rows = src.execute("SELECT id, timestamp, line_text FROM game_lines WHERE game_id = ?", (gsm_id,)).fetchall()
+                before = store.total_changes
+                store.executemany("INSERT OR IGNORE INTO lines VALUES (?,?,?,?,?)",
+                                  [(r["id"], lib_id, gsm_id, r["timestamp"], r["line_text"] or "") for r in rows])
+                added += store.total_changes - before
+                # keep lines pointing at the right game if a link was changed
+                store.execute("UPDATE lines SET game_id = ? WHERE gsm_game_id = ? AND game_id != ?", (lib_id, gsm_id, lib_id))
+                st = src.execute("""SELECT COALESCE(SUM(CAST(total_reading_time_seconds AS REAL)), 0) s,
+                                           COALESCE(SUM(CAST(total_cards_mined AS INTEGER)), 0) c, COUNT(*) d
+                                    FROM game_daily_rollup WHERE game_id = ?""", (gsm_id,)).fetchone()
+                store.execute("INSERT OR REPLACE INTO stats VALUES (?,?,?,?)", (gsm_id, st["s"], st["c"], st["d"]))
+                store.execute("DELETE FROM daily WHERE gsm_game_id = ?", (gsm_id,))
+                store.executemany("INSERT INTO daily VALUES (?,?,?) ON CONFLICT DO UPDATE SET seconds = seconds + excluded.seconds",
+                                  [(gsm_id, r["date"], r["s"]) for r in src.execute(
+                                      "SELECT date, SUM(CAST(total_reading_time_seconds AS REAL)) s FROM game_daily_rollup WHERE game_id = ? GROUP BY date", (gsm_id,))])
+                store.execute("DELETE FROM archive WHERE gsm_game_id = ?", (gsm_id,))
+                store.executemany("INSERT INTO archive VALUES (?,?,?,?,?)",
+                                  [(gsm_id, r["date"], r["chars"] or 0, r["lines"] or 0, r["seconds"] or 0) for r in gsm_third_party(src, gsm_id)])
+    finally:
+        src.close()
+        store.close()
+    return {"added": added, "linked": sum(1 for v in links.values() if v)}
+
+
+IDLE_CAP = 180  # seconds: a longer gap between two sentences isn't counted as reading time
+
+
+def gsm_days():
+    """Per day, per library game: sentences, characters and reading time (GSM's own daily figure where it has one,
+    otherwise estimated from the gaps between sentences)."""
+    store = gsm_store()
+    try:
+        rows = store.execute("SELECT ts, game_id, gsm_game_id, LENGTH(text) n FROM lines ORDER BY gsm_game_id, ts").fetchall()
+        rollup = {(r["gsm_game_id"], r["date"]): r["seconds"] for r in store.execute("SELECT * FROM daily")}
+        arch = store.execute("SELECT * FROM archive").fetchall()
+    finally:
+        store.close()
+    acc = {}      # (date, gsm game) -> [library game, lines, chars, estimated seconds]
+    prev = (None, None)
+    for r in rows:
+        day = time.strftime("%Y-%m-%d", time.localtime(r["ts"]))
+        a = acc.setdefault((day, r["gsm_game_id"]), [r["game_id"], 0, 0, 0.0])
+        a[1] += 1
+        a[2] += r["n"]
+        if prev[0] == r["gsm_game_id"] and prev[2] == day:
+            a[3] += min(r["ts"] - prev[1], IDLE_CAP)
+        prev = (r["gsm_game_id"], r["ts"], day)
+    days = {}
+    for (day, gsm_id), (lib_id, lines, chars, est) in acc.items():
+        secs = rollup.get((gsm_id, day), est)
+        item = days.setdefault(day, {}).setdefault(lib_id, {"gameId": lib_id, "lines": 0, "chars": 0, "seconds": 0.0})
+        item["lines"] += lines
+        item["chars"] += chars
+        item["seconds"] += secs
+    # Older reading GSM only has daily totals for. A day we hold real sentences for wins, so nothing is counted twice.
+    links = read_json(GSM_LINKS_FILE, {})
+    for r in arch:
+        lib_id = links.get(r["gsm_game_id"])
+        if not lib_id or (r["date"], r["gsm_game_id"]) in acc:
+            continue
+        item = days.setdefault(r["date"], {}).setdefault(lib_id, {"gameId": lib_id, "lines": 0, "chars": 0, "seconds": 0.0})
+        item["lines"] += r["lines"]
+        item["chars"] += r["chars"]
+        item["seconds"] += r["seconds"]
+    return [{"date": d, "items": sorted(v.values(), key=lambda i: -i["chars"])} for d, v in sorted(days.items())]
+
+
+def gsm_game_log(lib_id, offset=0, query=""):
+    """Stats and a page of imported sentences (newest first) for one library game."""
+    links = read_json(GSM_LINKS_FILE, {})
+    gsm_ids = [k for k, v in links.items() if v == lib_id]
+    store = gsm_store()
+    try:
+        agg = store.execute("SELECT COUNT(*) n, COALESCE(SUM(LENGTH(text)),0) c, MIN(ts) f, MAX(ts) l FROM lines WHERE game_id = ?", (lib_id,)).fetchone()
+        marks = ",".join("?" * len(gsm_ids)) or "NULL"
+        stats = store.execute(f"SELECT * FROM stats WHERE gsm_game_id IN ({marks})", gsm_ids).fetchall()
+        like = "%" + str(query).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        rows = store.execute("SELECT ts, text FROM lines WHERE game_id = ? AND text LIKE ? ESCAPE '\\' ORDER BY ts DESC LIMIT 100 OFFSET ?",
+                             (lib_id, like, max(0, int(offset or 0)))).fetchall()
+        total = store.execute("SELECT COUNT(*) FROM lines WHERE game_id = ? AND text LIKE ? ESCAPE '\\'", (lib_id, like)).fetchone()[0]
+        live = {(r[0], r[1]) for r in store.execute(
+            "SELECT DISTINCT gsm_game_id, date(ts, 'unixepoch', 'localtime') FROM lines WHERE game_id = ?", (lib_id,))}
+        arch = [r for r in store.execute(f"SELECT * FROM archive WHERE gsm_game_id IN ({marks})", gsm_ids)
+                if (r["gsm_game_id"], r["date"]) not in live]
+    finally:
+        store.close()
+    first, last = agg["f"], agg["l"]
+    for r in arch:  # older daily totals: counted for days we have no sentences for
+        t = time.mktime(time.strptime(r["date"], "%Y-%m-%d"))
+        first = t if first is None else min(first, t)
+        last = t if last is None else max(last, t)
+    return {"linked": bool(gsm_ids), "live": agg["n"], "lines": agg["n"] + sum(r["lines"] for r in arch),
+            "chars": agg["c"] + sum(r["chars"] for r in arch), "first": first, "last": last,
+            "days": len(live) + len(arch),
+            "seconds": sum(r["seconds"] for r in stats) + sum(r["seconds"] for r in arch), "cards": sum(r["cards"] for r in stats),
+            "total": total, "items": [{"ts": r["ts"], "text": r["text"]} for r in rows]}
 
 
 # ---------- VNDB ----------
@@ -580,6 +796,201 @@ def scan_folders():
                     errors.append(f"Couldn't read {here}: {e}")
     found.sort(key=lambda x: (x["platform"], x["title"].casefold()))
     return {"items": found, "errors": errors[:20]}
+
+
+# ---------- add games from a folder (Windows / Steam) ----------
+
+STEAM_URL = "steam://rungameid/"
+STEAM_SKIP_IDS = {"228980"}  # Steamworks Common Redistributables
+STEAM_SKIP_NAMES = ("proton", "steam linux runtime", "steamworks common")
+JUNK_DIRS = {"_commonredist", "commonredist", "redist", "redistributable", "redistributables", "directx", "dotnet",
+             "vcredist", "__installer", "installer", "support", "engine", "lib", "mono", "monobleedingedge",
+             "crashpad", "_redist", "__macosx", ".git", "node_modules"}
+JUNK_EXE = re.compile(r"unins|uninstall|vc_?redist|dxsetup|dxwebsetup|dotnet|ndp\d|oalinst|physx|crash|"
+                      r"notification_helper|webview2|cefsubprocess|7z|d3dx|vulkan|^python|^node|^ffmpeg|^lib", re.I)
+SOFT_JUNK_EXE = re.compile(r"setup|install|config|update|patch|helper|server|editor|benchmark", re.I)
+MAX_FOLDER_ENTRIES = 6000
+MAX_EXE_DEPTH = 3
+
+
+def steam_library_dirs():
+    """steamapps folders of every Steam library on this PC (registry, default path, libraryfolders.vdf)."""
+    roots = []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            roots.append(Path(winreg.QueryValueEx(key, "SteamPath")[0]))
+    except (ImportError, OSError):
+        pass
+    for var in ("ProgramFiles(x86)", "ProgramFiles"):
+        if os.environ.get(var):
+            roots.append(Path(os.environ[var]) / "Steam")
+    out = []
+    for root in roots:
+        vdf = root / "steamapps" / "libraryfolders.vdf"
+        libs = [root]
+        try:
+            libs += [Path(p.replace("\\\\", "\\")) for p in re.findall(r'"path"\s+"([^"]+)"', vdf.read_text("utf-8", "replace"))]
+        except OSError:
+            pass
+        for lib in libs:
+            d = lib / "steamapps"
+            if d.is_dir() and d not in out:
+                out.append(d)
+    return out
+
+
+def steam_manifests(steamapps):
+    """Installed Steam games in one steamapps folder: [{appid, name, folder}]."""
+    games = []
+    try:
+        files = sorted(steamapps.glob("appmanifest_*.acf"))
+    except OSError:
+        return games
+    for f in files:
+        try:
+            text = f.read_text("utf-8", "replace")
+        except OSError:
+            continue
+
+        def field(k):
+            m = re.search(r'"%s"\s+"([^"]*)"' % k, text)
+            return m.group(1) if m else ""
+
+        appid, name, installdir = field("appid"), field("name"), field("installdir")
+        if not (appid and installdir) or appid in STEAM_SKIP_IDS or name.lower().startswith(STEAM_SKIP_NAMES):
+            continue
+        games.append({"appid": appid, "name": name or installdir, "folder": steamapps / "common" / installdir})
+    return games
+
+
+def find_executables(folder, title=""):
+    """Launchable files in a game folder, best guess first. Skips uninstallers, redistributables and crash handlers."""
+    found, seen = [], 0
+    want = normalise(title or folder.name)
+    for dirpath, dirnames, filenames in os.walk(folder):
+        here = Path(dirpath)
+        depth = len(here.relative_to(folder).parts)
+        dirnames[:] = [] if depth + 1 >= MAX_EXE_DEPTH else [d for d in dirnames if d.lower() not in JUNK_DIRS]
+        for name in filenames:
+            seen += 1
+            stem, ext = os.path.splitext(name)
+            ext = ext.lower()
+            if ext != ".exe" and not (ext in (".lnk", ".bat") and depth == 0):
+                continue
+            if JUNK_EXE.search(stem):
+                continue
+            path = here / name
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            score = 100 - 25 * depth + (10 if size > 5 << 20 else 0) + (10 if size > 50 << 20 else 0)
+            n = normalise(stem)
+            if n and want and (n in want or want in n):
+                score += 40
+            elif n == "game":
+                score += 20  # RPG Maker and many other engines
+            if "launcher" in stem.lower():
+                score -= 5
+            if "shipping" in stem.lower():
+                score -= 10
+            if SOFT_JUNK_EXE.search(stem):
+                score -= 40
+            if ext != ".exe":
+                score -= 15
+            found.append({"path": str(path), "rel": str(path.relative_to(folder)), "size": size, "score": score})
+        if seen > MAX_FOLDER_ENTRIES:
+            break
+    found.sort(key=lambda c: (-c["score"], c["rel"].lower()))
+    return found[:8]
+
+
+def launch_key(path):
+    return path if path.lower().startswith(STEAM_URL) else os.path.normcase(os.path.normpath(path))
+
+
+def detect_folder(raw, mode="auto", steam=False):
+    """Work out the game(s) in a folder and how to launch each: a Steam library, one game folder,
+    or a folder of game folders. Returns {items, errors}; each item lists its launch candidates, best first."""
+    known = set()
+    for g in load_games():
+        for p in (g.get("exePath"), g.get("installFolder")):
+            if p:
+                known.add(launch_key(p))
+    ignored = load_ignored()["scan"]
+    items, errors = [], []
+
+    def add(title, folder, cands, appid=""):
+        if appid:
+            cands = [{"path": STEAM_URL + appid, "rel": "Launch through Steam", "size": 0, "score": 999}] + cands
+        if not cands:
+            return
+        keys = {launch_key(c["path"]) for c in cands} | {launch_key(str(folder))}
+        items.append({
+            "key": str(folder), "title": title, "folder": str(folder), "candidates": cands,
+            "exePath": cands[0]["path"], "steamAppId": appid, "platform": "pc",
+            "source": "steam" if appid else "folder",
+            "imported": bool(keys & known), "ignored": rom_key(str(folder)) in ignored,
+        })
+
+    def steam_dir(steamapps):
+        for m in steam_manifests(steamapps):
+            folder = m["folder"]
+            add(m["name"], folder, find_executables(folder, m["name"]) if folder.is_dir() else [], m["appid"])
+
+    if steam:
+        dirs = steam_library_dirs()
+        if not dirs:
+            raise ValueError("Couldn't find a Steam install on this PC. Pick a game folder instead.")
+        for d in dirs:
+            steam_dir(d)
+    else:
+        root = Path(os.path.expandvars((raw or "").strip().strip('"')))
+        if not root.is_dir():
+            raise ValueError(f"Folder not found: {raw}")
+        hit = None
+        if root.parent.name.lower() == "common" and root.parent.parent.is_dir():
+            hit = next((m for m in steam_manifests(root.parent.parent) if m["folder"].name.lower() == root.name.lower()), None)
+        if root.name.lower() == "steamapps" or (root / "steamapps").is_dir():
+            steam_dir(root if root.name.lower() == "steamapps" else root / "steamapps")
+        elif hit:
+            add(hit["name"], root, find_executables(root, hit["name"]), hit["appid"])
+        else:
+            try:
+                children = sorted(p for p in root.iterdir() if p.is_dir() and p.name.lower() not in JUNK_DIRS)
+            except OSError as e:
+                raise ValueError(f"Couldn't read {root}: {e}")
+            here = find_executables(root)
+            top = [c for c in here if Path(c["path"]).parent == root]
+            per_child = None
+            if mode == "each" or (mode == "auto" and not top and len(children) > 1):
+                per_child = [(p, find_executables(p)) for p in children[:300]]
+                if mode == "auto" and sum(1 for _, c in per_child if c) < 2:
+                    per_child = None  # one real game with its files in a subfolder
+            if per_child is not None:
+                for p, cands in per_child:
+                    add(clean_file_title(p.name), p, cands)
+            else:
+                add(clean_file_title(root.name), root, here)
+        if not items:
+            errors.append("No launchable files (.exe) found in that folder.")
+    items.sort(key=lambda x: x["title"].casefold())
+    return {"items": items, "errors": errors}
+
+
+def pick_folder():
+    """Open Windows' own folder picker on this PC and return the chosen path ('' if cancelled)."""
+    code = ("import tkinter as t, tkinter.filedialog as f\nr=t.Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
+            "print(f.askdirectory(title='Choose a game folder'))")
+    try:
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError("Couldn't open the folder picker. Paste the folder path instead.")
+    if out.returncode:
+        raise ValueError("Couldn't open the folder picker. Paste the folder path instead.")
+    path = out.stdout.strip()
+    return {"path": os.path.normpath(path) if path else ""}
 
 
 # ---------- Switch DLC / updates ----------
@@ -1096,8 +1507,34 @@ def clean_tierlists(doc):
         if not tiers:
             raise ValueError(f"'{l.get('name') or lid}' needs at least one tier.")
         place = l.get("placements") if isinstance(l.get("placements"), dict) else {}
+        order = l.get("order") if isinstance(l.get("order"), list) else []
         out.append({"id": lid, "kind": l["kind"], "name": str(l.get("name") or "Tier list")[:60], "tiers": tiers,
-                    "placements": {str(k)[:200]: v for k, v in place.items() if v in tids}})
+                    "placements": {str(k)[:200]: v for k, v in place.items() if v in tids},
+                    "order": [str(k)[:200] for k in order[:5000] if isinstance(k, str)]})
+    return {"lists": out}
+
+
+def clean_rankings(doc):
+    """Validate a rankings document from the page. Raises ValueError with something readable."""
+    lists = doc.get("lists") if isinstance(doc, dict) else None
+    if not isinstance(lists, list) or len(lists) > 60:
+        raise ValueError("Rankings should be a list of at most 60.")
+    out, seen = [], set()
+    for l in lists:
+        if not isinstance(l, dict) or l.get("kind") not in ("game", "route", "character") or not str(l.get("id") or ""):
+            raise ValueError("A ranking is missing its id or kind.")
+        lid = str(l["id"])[:40]
+        if lid in seen:
+            raise ValueError("Two rankings share an id.")
+        seen.add(lid)
+        items = []
+        for it in (l.get("items") if isinstance(l.get("items"), list) else [])[:1000]:
+            # an item is a list of ids that all mean the same thing (a character can be known by more than one)
+            keys = [str(k)[:200] for k in it if isinstance(k, str) and k][:8] if isinstance(it, list) else []
+            if keys:
+                items.append(keys)
+        out.append({"id": lid, "kind": l["kind"], "name": str(l.get("name") or "Ranking")[:60],
+                    "note": str(l.get("note") or "")[:200], "items": items})
     return {"lists": out}
 
 
@@ -1320,6 +1757,13 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/jiten/(deck|vocab)/(\d+)", path)
             if m:
                 return self.send_json((jiten_deck if m.group(1) == "deck" else jiten_vocab)(m.group(2)))
+            if path == "/api/gsm/days":
+                return self.send_json(gsm_days())
+            if path == "/api/gsm/games":
+                return self.send_json(gsm_games())
+            m = re.fullmatch(r"/api/gsm/log/([\w-]+)", path)
+            if m:
+                return self.send_json(gsm_game_log(m.group(1), query.get("offset", ["0"])[0], query.get("q", [""])[0]))
             if path == "/api/library/summary":
                 return self.send_json(library_summary())
             if path == "/api/characters":
@@ -1329,17 +1773,24 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/img":
                 dest = cached_image(query.get("u", [""])[0])
                 return self.send_file(IMG_CACHE, dest.name)
+            if path == "/api/rankings":
+                return self.send_json(read_json(RANKINGS_FILE, {"lists": None}))  # None: never saved, the page seeds the defaults
             if path == "/api/tierlists":
                 return self.send_json(read_json(TIERLISTS_FILE, {"lists": None}))  # None: never saved, the page seeds the defaults
             if path == "/api/dlc/check":
                 return self.send_json(check_dlc())
             if path == "/api/scan":
                 return self.send_json(scan_folders())
+            if path == "/api/folder/detect":
+                return self.send_json(detect_folder(query.get("path", [""])[0], query.get("mode", ["auto"])[0],
+                                                    query.get("steam", [""])[0] == "1"))
             if path == "/api/itch/owned":
                 key = load_settings().get("itchApiKey")
                 if not key:
                     raise ValueError("No itch.io API key yet. Add one in Settings.")
                 return self.send_json(itch_owned(key))
+        except sqlite3.Error as e:
+            return self.send_json({"error": f"GSM database problem: {e}"}, 500)
         except urllib.error.URLError as e:
             return self.send_json({"error": f"Network error: {e.reason}"}, 502)
         except ValueError as e:
@@ -1365,6 +1816,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(game, 201)
             if path == "/api/library/reset":
                 return self.send_json(reset_library(self.read_body().get("mode")))
+            if path == "/api/folder/browse":
+                return self.send_json(pick_folder())
+            if path == "/api/restart":
+                self.send_json({"ok": True})
+                self.wfile.flush()
+                # shutdown() must run off the request thread; main() then relaunches us
+                restart["requested"] = True
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
+            if path == "/api/gsm/import":
+                return self.send_json(gsm_import(self.read_body().get("links")))
             if path == "/api/ignore":
                 b = self.read_body()
                 return self.send_json(set_ignored(b.get("list"), b.get("path") or "", b.get("title"), b.get("ignore") is not False))
@@ -1393,6 +1855,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(game)
         except ValueError as e:
             return self.send_json({"error": str(e)}, 400)
+        except sqlite3.Error as e:
+            return self.send_json({"error": f"GSM database problem: {e}"}, 500)
         except urllib.error.URLError as e:
             return self.send_json({"error": f"VNDB request failed: {getattr(e, 'reason', e)}"}, 502)
         except OSError as e:
@@ -1403,6 +1867,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/rankings":
+            try:
+                doc = clean_rankings(self.read_body())
+                with lock:
+                    write_json(RANKINGS_FILE, doc)
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
+            return self.send_json(doc)
         if path == "/api/tierlists":
             try:
                 doc = clean_tierlists(self.read_body())
@@ -1451,9 +1923,15 @@ def main():
     DATA.mkdir(exist_ok=True)
     # On Windows, address reuse would let us silently share a port another app owns
     ThreadingHTTPServer.allow_reuse_address = False
-    try:
-        server = ThreadingHTTPServer((HOST, PORT), Handler)
-    except OSError:
+    server = None
+    # A restarted copy may start before the old one has let go of the port, so retry briefly
+    for _ in range(40 if "--restarted" in sys.argv else 1):
+        try:
+            server = ThreadingHTTPServer((HOST, PORT), Handler)
+            break
+        except OSError:
+            time.sleep(0.25)
+    if server is None:
         sys.exit(f"Port {PORT} is already in use. Is the library already running? "
                  f"(Or set a different PORT environment variable.)")
     url = f"http://localhost:{PORT}/"
@@ -1464,6 +1942,11 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    server.server_close()  # frees the port
+    if restart["requested"]:
+        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)  # a fresh console window, like start-library.bat gives
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--no-browser", "--restarted"],
+                         cwd=str(ROOT), creationflags=flags)
 
 
 if __name__ == "__main__":
