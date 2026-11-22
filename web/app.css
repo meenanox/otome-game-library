@@ -162,6 +162,7 @@ main { padding: 8px 24px 48px; }
 .status-line { display: flex; justify-content: space-between; align-items: center; margin-top: auto; padding-top: 8px; font-size: 12px; }
 .pill { padding: 1px 8px; border-radius: 999px; background: var(--surface-2); }
 .pill.playing { color: var(--st-progress); }
+.pill.paused { color: var(--st-warn, #b7791f); }
 .pill.completed { color: var(--st-good); }
 .pill.dropped { color: var(--st-bad); }
 .progress { display: flex; gap: 3px; margin-top: 6px; }
@@ -368,6 +369,7 @@ label.inline input { width: auto; }
   background: var(--st-none); border: 3px solid var(--bg); }
 .trail-item .dot.completed { background: var(--st-good); }
 .trail-item .dot.playing { background: var(--st-progress); }
+.trail-item .dot.paused { background: var(--st-warn, #b7791f); }
 .trail-item .dot.dropped { background: var(--st-bad); }
 .trail-cover { width: 56px; aspect-ratio: 2 / 3; border-radius: 6px; overflow: hidden; flex: none; }
 .trail-cover .cover { width: 100%; height: 100%; object-fit: cover; display: block; }

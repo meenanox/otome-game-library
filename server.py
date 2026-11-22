@@ -692,6 +692,28 @@ def rom_key(rom):
     return rom if VITA_TITLE_ID.match(rom) else os.path.normcase(os.path.normpath(rom))
 
 
+def rom_loose_key(rom):
+    """File name without extension and without [tags] / (tags), case-folded: still matches a game after the dump was renamed
+    (e.g. the release tags or title ID were added or removed). Vita title IDs have no file name, so they aren't loosened."""
+    if VITA_TITLE_ID.match(rom):
+        return None
+    stem = re.sub(r"\s*[\[(][^\])]*[\])]", "", os.path.splitext(os.path.basename(rom))[0])
+    return re.sub(r"\s+", " ", stem).strip().casefold() or None
+
+
+SWITCH_TITLE_ID = re.compile(r"\[([0-9A-Fa-f]{16})\]")
+
+
+def title_id_of(rom):
+    m = SWITCH_TITLE_ID.search(rom or "")
+    return m.group(1).upper() if m else None
+
+
+def title_key(title):
+    """Letters and digits only (any script), case-folded: 'Sympathy Kiss' == 'SympathyKiss'."""
+    return "".join(c for c in (title or "").casefold() if c.isalnum())
+
+
 IGNORE_FILE = DATA / "ignored.json"  # files the user doesn't want offered again: {"scan": {key: {title, path}}, "dlc": {...}}
 
 
@@ -718,6 +740,10 @@ def scan_folders():
     settings = load_settings()
     games = load_games()
     known = {rom_key(g["romPath"]) for g in games if g.get("romPath")}
+    known_loose = {rom_loose_key(g["romPath"]) for g in games if g.get("romPath")} - {None}
+    # An already-imported game is recognised by any of: exact path, renamed file, Switch title ID, or the same title on the same platform
+    known_ids = {title_id_of(g["romPath"]) for g in games if g.get("romPath")} - {None}
+    known_titles = {(g.get("platform"), title_key(t)) for g in games for t in (g.get("title"), g.get("originalTitle")) if title_key(t)}
     ignored = load_ignored()["scan"]
     found, errors = [], []
 
@@ -727,7 +753,9 @@ def scan_folders():
         found.append({
             "key": rom, "emulator": emulator, "platform": EMULATOR_PLATFORM.get(emulator, "other"),
             "romPath": rom, "title": title, "serial": serial, "location": where,
-            "imported": rom_key(rom) in known, "ignored": rom_key(rom) in ignored,
+            "imported": (rom_key(rom) in known or rom_loose_key(rom) in known_loose or title_id_of(rom) in known_ids
+                         or (EMULATOR_PLATFORM.get(emulator), title_key(title)) in known_titles),
+            "ignored": rom_key(rom) in ignored,
         })
 
     for emulator, emu in settings["emulators"].items():
@@ -1219,7 +1247,7 @@ def vndb_details(vid):
 VNDB_GAP = 1.6
 _last_call = [0.0]
 VNDB_LABELS_DIARY = {"Playing", "Finished", "Stalled", "Dropped"}
-LABEL_STATUS = {"Playing": "playing", "Finished": "completed", "Stalled": "dropped", "Dropped": "dropped"}
+LABEL_STATUS = {"Playing": "playing", "Finished": "completed", "Stalled": "paused", "Dropped": "dropped"}
 PLATFORM_ORDER = ["win", "swi", "psv", "psp", "ps4"]
 ULIST_FIELDS = (
     "id, added, voted, vote, started, finished, labels.id, labels.label, "

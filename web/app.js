@@ -8,7 +8,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
 const LABELS = {
   category: { otome: "Otome", bl: "BL", josei: "Josei-muke", other: "Non-otome" },
   format: { pc: "PC", emulated: "Emulated", physical: "Physical" },
-  status: { unplayed: "Unplayed", playing: "Playing", completed: "Completed", dropped: "Dropped" },
+  status: { unplayed: "Unplayed", playing: "Playing", paused: "Paused", completed: "Completed", dropped: "Dropped" },
   platform: { pc: "PC", psp: "PSP", vita: "PS Vita", switch: "Switch", ps4: "PS4", other: "Other" },
   route: { none: "—", progress: "Playing", completed: "Completed", dropped: "Dropped" },
 };
@@ -430,7 +430,7 @@ function bindLog(g, dlg) {
 // ---------- page: Diary ----------
 
 const diaryUI = { q: "", status: "" };
-const inDiary = (g) => g.shelf === "diary" || ["playing", "completed", "dropped"].includes(g.status);
+const inDiary = (g) => g.shelf === "diary" || ["playing", "paused", "completed", "dropped"].includes(g.status);
 const diaryDate = (g) => g.startedOn || g.finishedOn || (g.addedAt || "").slice(0, 10);
 
 function diaryEntries() {
@@ -463,7 +463,7 @@ function diaryRowHTML(g) {
 function renderDiary(host) {
   const list = diaryEntries();
   host.querySelector("#diaryList").innerHTML = list.length ? list.map(diaryRowHTML).join("")
-    : `<p class="empty">Nothing in the diary yet. Games you set to Playing, Completed or Dropped (or that come from your VNDB list as Playing / Finished) show up here.</p>`;
+    : `<p class="empty">Nothing in the diary yet. Games you set to Playing, Paused, Completed or Dropped (or that come from your VNDB list as Playing / Finished) show up here.</p>`;
   host.querySelector("#diaryCount").textContent = `${list.length} entries`;
   host.querySelectorAll("[data-dstatus]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.dstatus === diaryUI.status)));
 }
@@ -475,7 +475,7 @@ VIEWS.diary = {
       <div class="filters page-filters">
         <div class="filter-group"><b>Status</b>
           <button class="chip" data-dstatus="" aria-pressed="true">All</button>
-          ${["playing", "completed", "dropped"].map((k) => `<button class="chip" data-dstatus="${k}" aria-pressed="false">${LABELS.status[k]}</button>`).join("")}
+          ${["playing", "paused", "completed", "dropped"].map((k) => `<button class="chip" data-dstatus="${k}" aria-pressed="false">${LABELS.status[k]}</button>`).join("")}
         </div>
         <input id="diarySearch" type="search" placeholder="Search the diary…" value="${esc(diaryUI.q)}">
         <small id="diaryCount"></small>
@@ -720,7 +720,7 @@ function fitBand(g) {
 }
 
 function pickList(linked) {
-  const open = linked.filter((g) => readPct(g) < 100 && g.status !== "completed" && g.status !== "dropped");
+  const open = linked.filter((g) => readPct(g) < 100 && g.status !== "completed" && g.status !== "dropped" && g.status !== "paused");
   const resuming = open.filter((g) => readPct(g) > 0 || g.status === "playing");
   const lenOk = (g) => {
     const h = hoursOf(g);
