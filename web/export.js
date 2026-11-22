@@ -236,7 +236,7 @@ async function renderTierImage(canvas, opts, list, items) {
     ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
     ctx.fillText(opts.footer, W / 2, H - T.pad * 0.5 - 6);
   }
-  return { w: W, h: H, scale, count: all.length };
+  return { w: W, h: H, scale, count: all.length, missing: all.filter((it) => it.img && !imgs.get(it.key)).length };
 }
 
 function openTierExport(list, items) {
@@ -290,7 +290,8 @@ function openTierExport(list, items) {
     const info = await renderTierImage($("#exCanvas", dlg), o, list, items);
     if (mine !== run) return;
     $("#exBusy", dlg).hidden = true;
-    $("#exInfo", dlg).textContent = `${info.w}×${Math.round(info.h)} px · ${info.count} cards${info.scale < 1 ? " · scaled down to fit the browser's size limit" : ""}`;
+    $("#exInfo", dlg).textContent = `${info.w}×${Math.round(info.h)} px · ${info.count} cards${info.scale < 1 ? " · scaled down to fit the browser's size limit" : ""}`
+      + (info.missing ? ` · ⚠ ${info.missing} picture${info.missing === 1 ? "" : "s"} couldn't load. If most are missing, close the library window and start it again (start-library.bat) so the new image route is running.` : "");
     try { localStorage.setItem(EXPORT_OPTS_KEY, JSON.stringify({ ...o, title: "" })); } catch (e) {}
   };
   const soon = () => { clearTimeout(timer); timer = setTimeout(draw, 200); };
