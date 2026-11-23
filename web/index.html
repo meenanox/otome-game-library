@@ -145,6 +145,15 @@
         </label>
 
         <label>Language <input name="language" placeholder="English / Japanese / fan TL"></label>
+        <label>JP / EN tag
+          <select name="langTag">
+            <option value="">Auto (from folder)</option>
+            <option value="jp">JP</option>
+            <option value="en">EN</option>
+            <option value="both">JP + EN</option>
+          </select>
+          <small id="langHint" class="muted"></small>
+        </label>
         <label>Status
           <select name="status">
             <option value="unplayed">Unplayed</option>

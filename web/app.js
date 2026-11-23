@@ -14,10 +14,34 @@ const LABELS = {
 };
 const THEMES = ["pastel", "noir"];
 
+// ---------- JP / EN language tags ----------
+// g.langTag is the self-tag: "jp", "en", "both", or "" for auto. Auto reads the game's folder / file path, then the free-text Language field.
+const LANG_TAGS = { jp: ["JP"], en: ["EN"], both: ["JP", "EN"] };
+const LANG_RE = {
+  jp: /(?:^|[\\/_\-\s.\[(])(?:jp|jpn|jap|japanese|japan|日本語|日本)(?=$|[\\/_\-\s.\])])/i,
+  en: /(?:^|[\\/_\-\s.\[(])(?:en|eng|english|translated|fan[\s_-]?tl|英語)(?=$|[\\/_\-\s.\])])/i,
+};
+/** Which of JP / EN a path or label mentions, as "jp" | "en" | "both" | "". */
+function detectLang(text) {
+  if (!text) return "";
+  const jp = LANG_RE.jp.test(text), en = LANG_RE.en.test(text);
+  return jp && en ? "both" : jp ? "jp" : en ? "en" : "";
+}
+/** The game's language tag and where it came from: {tag, auto}. */
+function langOf(g) {
+  if (g.langTag) return { tag: g.langTag, auto: false };
+  const tag = detectLang([g.exePath, g.romPath, g.installFolder].filter(Boolean).join("\\")) || detectLang(g.language);
+  return { tag, auto: true };
+}
+const langBadges = (g) => {
+  const { tag, auto } = langOf(g);
+  return (LANG_TAGS[tag] || []).map((l) => `<span class="lang ${l.toLowerCase()}${auto ? " auto" : ""}" title="${l === "JP" ? "Japanese" : "English"}${auto ? " (from folder)" : ""}">${l}</span>`).join("");
+};
+
 const state = {
   games: [],
   settings: { emulators: {} },
-  filter: { q: "", category: "", format: "", status: "" },
+  filter: { q: "", category: "", format: "", status: "", lang: "" },
   sort: "title",
   editing: null, // game being edited, or null when adding
 };
@@ -101,10 +125,14 @@ async function launchGame(id) {
 // ---------- filters & grid ----------
 
 function renderFilters() {
-  const groups = [["category", "Category"], ["format", "Owned as"], ["status", "Status"]];
+  const groups = [["category", "Category"], ["format", "Owned as"], ["status", "Status"], ["lang", "Language"]];
+  // Language isn't a plain field: a game tagged "both" counts under JP and under EN
+  const hasLang = (g, v) => v === "none" ? !langOf(g).tag : (LANG_TAGS[langOf(g).tag] || []).includes(v.toUpperCase());
+  const LANG_CHIPS = { jp: "JP", en: "EN", none: "Untagged" };
   $("#filters").innerHTML = groups.map(([key, label]) => {
     const chips = [["", "All", state.games.length],
-      ...Object.entries(LABELS[key]).map(([v, l]) => [v, l, state.games.filter((g) => g[key] === v).length])];
+      ...Object.entries(key === "lang" ? LANG_CHIPS : LABELS[key]).map(([v, l]) =>
+        [v, l, state.games.filter((g) => key === "lang" ? hasLang(g, v) : g[key] === v).length])];
     return `<div class="filter-group"><b>${label}</b>${chips.map(([v, l, n]) =>
       `<button class="chip" data-filter="${key}" data-value="${v}" aria-pressed="${state.filter[key] === v}">${l}<span class="n">${n}</span></button>`
     ).join("")}</div>`;
@@ -112,9 +140,10 @@ function renderFilters() {
 }
 
 function visibleGames() {
-  const { q, category, format, status } = state.filter;
+  const { q, category, format, status, lang } = state.filter;
   const needle = q.trim().toLowerCase();
   const list = state.games.filter((g) =>
+    (!lang || (lang === "none" ? !langOf(g).tag : (LANG_TAGS[langOf(g).tag] || []).includes(lang.toUpperCase()))) &&
     (!category || g.category === category) &&
     (!format || g.format === format) &&
     (!status || g.status === status) &&
@@ -141,6 +170,7 @@ function cardHTML(g) {
         ${coverHTML(g)}
         <span class="badge cat-${esc(g.category)}">${esc(LABELS.category[g.category] || "")}</span>
         <span class="fmt">${esc(LABELS.format[g.format] || "")}</span>
+        ${langBadges(g) ? `<span class="langs">${langBadges(g)}</span>` : ""}
         ${canLaunch(g) ? `<button class="play" data-play="${esc(g.id)}" title="Launch" aria-label="Launch ${esc(g.title)}">▶</button>` : ""}
       </div>
       <div class="card-body">
@@ -270,7 +300,7 @@ function openDetail(id) {
   if (!g) return;
   const dlg = $("#detailDialog");
   const tags = [LABELS.category[g.category], LABELS.platform[g.platform], LABELS.format[g.format],
-    g.language, g.brand, g.released].filter(Boolean);
+    (LANG_TAGS[langOf(g).tag] || []).join(" + "), g.language, g.brand, g.released].filter(Boolean);
   const stars = [1, 2, 3, 4, 5].map((n) =>
     `<button data-rate="${n}" class="${n <= (g.rating || 0) ? "on" : ""}" aria-label="${n} stars">★</button>`).join("");
   const routes = (g.routes || []).map((r, i) => `
@@ -1029,6 +1059,14 @@ function readRoutesEdit() {
   })).filter((r) => r.name);
 }
 
+/** Under the JP/EN select: what Auto would pick for the paths currently in the form. */
+function syncLangHint(g = readCurrentForm()) {
+  const el = $("#langHint");
+  if (!el) return;
+  const auto = langOf({ ...g, langTag: "" }).tag;
+  el.textContent = auto ? `Auto: ${LANG_TAGS[auto].join(" + ")} (from the folder / file path)` : "Auto: nothing recognised in the folder name";
+}
+
 function syncFormatFields() {
   const fmt = form.elements.format.value;
   $$("[data-for-format]", form).forEach((el) => { el.hidden = el.dataset.forFormat !== fmt; });
@@ -1036,9 +1074,10 @@ function syncFormatFields() {
 
 function fillForm(g) {
   for (const name of ["title", "originalTitle", "category", "platform", "brand", "released", "exePath",
-    "emulator", "romPath", "language", "status", "cover", "notes", "description"]) {
+    "emulator", "romPath", "language", "langTag", "status", "cover", "notes", "description"]) {
     if (form.elements[name]) form.elements[name].value = g[name] ?? "";
   }
+  syncLangHint(g);
   form.elements.format.value = g.format || "pc";
   if (!form.elements.category.value) form.elements.category.value = "otome";
   if (!form.elements.platform.value) form.elements.platform.value = "pc";
@@ -1163,6 +1202,7 @@ function pickRelease(id) {
 $("#vndbResults").addEventListener("change", (e) => {
   if (e.target.dataset.addrel && pendingRelease) pickRelease(e.target.value);
 });
+for (const n of ["exePath", "romPath", "language"]) form.elements[n].addEventListener("input", () => syncLangHint());
 form.elements.platform.addEventListener("change", () => {
   if (lastVn && form.dataset.vndbId === lastVn.vndbId) offerReleases(lastVn);
 });
@@ -1171,7 +1211,7 @@ function readCurrentForm() {
   const f = form.elements;
   const g = { ...(state.editing || {}) };
   for (const name of ["title", "originalTitle", "category", "platform", "brand", "released",
-    "language", "status", "cover", "notes", "description"]) {
+    "language", "langTag", "status", "cover", "notes", "description"]) {
     g[name] = f[name].value.trim();
   }
   g.format = f.format.value;
