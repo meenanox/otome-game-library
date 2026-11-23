@@ -169,7 +169,6 @@ function cardHTML(g) {
       <div class="cover-wrap">
         ${coverHTML(g)}
         <span class="badge cat-${esc(g.category)}">${esc(LABELS.category[g.category] || "")}</span>
-        <span class="fmt">${esc(LABELS.format[g.format] || "")}</span>
         ${langBadges(g) ? `<span class="langs">${langBadges(g)}</span>` : ""}
         ${LABELS.platform[g.platform] ? `<span class="console ${esc(g.platform)}" title="Console / platform">${esc(LABELS.platform[g.platform])}</span>` : ""}
         ${canLaunch(g) ? `<button class="play" data-play="${esc(g.id)}" title="Launch" aria-label="Launch ${esc(g.title)}">▶</button>` : ""}

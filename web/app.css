@@ -647,7 +647,7 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); tex
 @media (max-width: 700px) { .rank-cols { grid-template-columns: 1fr; } }
 
 /* ---- JP / EN language tags ---- */
-.langs { position: absolute; top: 34px; right: 8px; display: flex; gap: 4px; }
+.langs { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
 .lang { font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 2px 7px; border-radius: 999px; color: #fff; background: #c4476a; }
 .lang.en { background: #3f6fb5; }
 .lang.auto { opacity: .8; outline: 1px dashed rgba(255,255,255,.7); outline-offset: -2px; }
