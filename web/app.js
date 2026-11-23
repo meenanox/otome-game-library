@@ -295,6 +295,25 @@ const gsmDate = (ts) => ts ? new Date(ts * 1000).toLocaleDateString(undefined, {
 const gsmHours = (s) => s >= 3600 ? `${(s / 3600).toFixed(1)} h` : `${Math.round(s / 60)} min`;
 const gsmState = { rows: [] };
 
+/** "Import all new": relink nothing by hand, just pull every new sentence (exact matches are linked automatically). */
+async function gsmImportNew(btn) {
+  const label = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = "Importing…"; }
+  try {
+    const res = await api("POST", "/api/gsm/import-new", {});
+    const bits = [res.added ? `Imported ${fmt(res.added)} new sentences` : "Already up to date"];
+    if (res.newlyLinked) bits.push(`${res.newlyLinked} new game${res.newlyLinked === 1 ? "" : "s"} linked`);
+    if (res.unmatched) bits.push(`${res.unmatched} need matching (open Import from GSM)`);
+    toast(bits.join(" · "));
+    if (currentView === "timeline") VIEWS.timeline.render($("#viewHost"), true);
+    return res;
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
 async function openGsm() {
   startImport("gsm", "Import from GameSentenceMiner", "Reading GSM's database…");
   $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button>`;
@@ -331,10 +350,15 @@ function renderGsm() {
     <p>GSM has <b>${fmt(total)}</b> logged sentences${oldTotal ? ` and <b>${fmt(oldTotal)}</b> characters of older daily stats` : ""} across ${withLines.length} games. Pick the library game for each one, then import. GSM's database is only read, never changed. Importing again later adds just the new lines.</p>
     ${withLines.map(row).join("") || `<p class="muted">GSM has no logged sentences yet.</p>`}
     ${empty ? `<p class="muted"><small>${empty} GSM games with no sentences are hidden.</small></p>` : ""}`;
-  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button><button type="button" class="primary" id="gsmGo">Import</button>`;
+  $("#itchFoot").innerHTML = `<button type="button" class="ghost" data-close>Close</button><button type="button" class="ghost" id="gsmNew" title="Link exact matches automatically and import every new sentence">Import all new</button><button type="button" class="primary" id="gsmGo">Import</button>`;
 }
 
 $("#itchDialog").addEventListener("click", async (e) => {
+  if (itch.source === "gsm" && e.target.id === "gsmNew") {
+    const res = await gsmImportNew(e.target);
+    if (res) { $("#itchDialog").close(); if (res.unmatched) openGsm(); }
+    return;
+  }
   if (itch.source !== "gsm" || e.target.id !== "gsmGo") return;
   const links = {};
   $$("[data-gsm]", $("#itchBody")).forEach((s) => { links[s.dataset.gsm] = s.value || null; });
@@ -2189,11 +2213,13 @@ VIEWS.timeline = {
     const empty = !tlUI.days.length;
     host.innerHTML = `<h2 class="page-h">Timeline</h2>
       <div class="tabs">${[["calendar", "Calendar"], ["trail", "Trail"]].map(([k, l]) =>
-        `<button type="button" data-tlmode="${k}" aria-pressed="${tlUI.mode === k}">${l}</button>`).join("")}</div>
+        `<button type="button" data-tlmode="${k}" aria-pressed="${tlUI.mode === k}">${l}</button>`).join("")}
+        <button type="button" class="chip spacer" data-gsmnew title="Pull in every new GameSentenceMiner sentence">⟳ Import all new</button></div>
       ${tlUI.mode === "trail" ? trailHTML() : `${empty ? `<p class="muted">No reading logged yet. Use <b>Import from GSM</b> in the side menu to bring in your sentences, and the days you played will show up here.</p>` : ""}${calendarHTML()}`}`;
     const again = () => VIEWS.timeline.render(host, false);
     host.onclick = (e) => {
       const t = e.target.closest("button");
+      if (t?.dataset.gsmnew) return gsmImportNew(t);
       if (t?.dataset.tlmode) { tlUI.mode = t.dataset.tlmode; return again(); }
       if (t?.dataset.cal) {
         if (t.dataset.cal === "today") { const n = new Date(); tlUI.month = `${n.getFullYear()}-${pad2(n.getMonth() + 1)}`; tlUI.day = `${tlUI.month}-${pad2(n.getDate())}`; }

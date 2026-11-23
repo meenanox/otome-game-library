@@ -386,6 +386,18 @@ def gsm_import(choices):
     return {"added": added, "linked": sum(1 for v in links.values() if v)}
 
 
+def gsm_import_new():
+    """One click: keep every existing link, link undecided GSM games that match a library game exactly
+    (VNDB id or title), then copy all new sentences. Games with no exact match are left for the dialog."""
+    rows = gsm_games()
+    choices = {r["id"]: r["suggested"] for r in rows
+               if not r["decided"] and r["suggested"] and (r["lines"] > 0 or r["oldChars"] > 0)}
+    res = gsm_import(choices)
+    res["newlyLinked"] = len(choices)
+    res["unmatched"] = sum(1 for r in rows if not r["decided"] and not r["suggested"] and r["lines"] > 0)
+    return res
+
+
 IDLE_CAP = 180  # seconds: a longer gap between two sentences isn't counted as reading time
 
 
@@ -1855,6 +1867,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/gsm/import":
                 return self.send_json(gsm_import(self.read_body().get("links")))
+            if path == "/api/gsm/import-new":
+                return self.send_json(gsm_import_new())
             if path == "/api/ignore":
                 b = self.read_body()
                 return self.send_json(set_ignored(b.get("list"), b.get("path") or "", b.get("title"), b.get("ignore") is not False))
