@@ -651,3 +651,12 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); tex
 .lang { font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 2px 7px; border-radius: 999px; color: #fff; background: #c4476a; }
 .lang.en { background: #3f6fb5; }
 .lang.auto { opacity: .8; outline: 1px dashed rgba(255,255,255,.7); outline-offset: -2px; }
+
+/* ---- console / platform badge on cards ---- */
+.console { position: absolute; left: 8px; bottom: 10px; font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 9px;
+  border-radius: 999px; color: #fff; background: #5b6275; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+.console.psp { background: #2b2f3a; }
+.console.vita { background: #1f6fd1; }
+.console.switch { background: #e4363f; }
+.console.ps4 { background: #2a4fa8; }
+.console.pc { background: #4a5568; }
