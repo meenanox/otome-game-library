@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tier List Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Press+Start+2P&family=Orbitron:wght@700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <h1>Tier List Studio <small>characters from KoiLog &amp; VNDB</small></h1>
+  <div class="top-actions">
+    <input id="listName" value="My character tier list" aria-label="List name">
+    <span class="seg" id="modeSeg"><button data-mode="tier" aria-pressed="true">Tier list</button><button data-mode="venn" aria-pressed="false">Venn diagram</button><button data-mode="axis" aria-pressed="false">Axis chart</button></span>
+    <button id="btnImport" class="primary">Import characters</button>
+    <button id="btnAuto" class="ghost" title="Place characters by your KoiLog character ratings">Auto-rank by rating</button>
+    <button id="btnTiers" class="ghost">Edit ranks</button>
+    <button id="btnLayout" class="ghost">Layout</button>
+    <button id="btnExport" class="primary">Export image</button>
+    <details class="more"><summary class="ghost">More</summary>
+      <div class="menu">
+        <button id="btnSave">Save list to file</button>
+        <button id="btnLoad">Open list file</button>
+        <button id="btnReset">Move everyone back to the pool</button>
+        <button id="btnPoolReset">Reset character pool (remove unranked)</button>
+        <button id="btnClear">Clear everything</button>
+      </div>
+    </details>
+  </div>
+</header>
+
+<main>
+  <div class="board-wrap"><div id="vennBar" class="venn-bar" hidden></div><div id="axisBar" class="venn-bar" hidden></div><section id="board" class="board" aria-label="Board"></section></div>
+  <div id="resizer" class="resizer" title="Drag to resize the pool"></div>
+  <aside class="pool-wrap">
+    <div class="pool-head">
+      <b>Pool</b> <span id="poolCount" class="muted"></span> <button id="btnPoolReset2" class="ghost" title="Remove all unranked characters from the pool">Reset pool</button>
+      <input id="poolSearch" type="search" placeholder="Filter by name or game…">
+      <select id="poolSort"><option value="added">As imported</option><option value="name">Name</option><option value="game">Game</option><option value="rating">My rating</option></select>
+    </div>
+    <div id="pool" class="pool" data-tier=""></div>
+    <p class="muted hint">Drag characters onto a tier, or click one and then click a tier. Right-click a card to remove it.</p>
+  </aside>
+</main>
+
+<dialog id="importDlg" class="sheet">
+  <header class="sheet-head"><h2>Import characters</h2><button class="icon" data-close aria-label="Close">✕</button></header>
+  <nav class="tabs">
+    <button data-tab="koilog" aria-pressed="true">KoiLog user</button>
+    <button data-tab="vndb">VNDB</button>
+    <button data-tab="name">Search by name</button>
+  </nav>
+  <div class="sheet-body">
+    <div data-pane="koilog">
+      <p class="muted">Enter a KoiLog username (or paste the profile link, e.g. <code>koilog.moe/u/keitopan</code>). The profile has to be public.</p>
+      <div class="row"><input id="klUser" placeholder="username" value="keitopan"><button id="klGo" class="primary">Import</button></div>
+      <label class="inline"><input type="checkbox" id="klPlayed" checked> Only characters whose route I've started or finished</label>
+      <label class="inline"><input type="checkbox" id="klRank" checked> Remember my character ratings (for Auto-rank)</label>
+    </div>
+    <div data-pane="vndb" hidden>
+      <p class="muted">Paste VN ids (<code>v17, v2002</code>), or a VNDB username / user id (<code>u1234</code>) to use their list.</p>
+      <div class="row"><input id="vnIn" placeholder="v17, v2002   or   username / u1234"><button id="vnGo" class="primary">Import</button></div>
+      <label class="inline"><input type="checkbox" id="vnMain" checked> Only main &amp; primary characters</label>
+    </div>
+    <div data-pane="name" hidden>
+      <div class="row"><input id="nmIn" placeholder="game or character name"><button id="nmGo" class="primary">Search</button></div>
+      <div id="nmRes" class="results"></div>
+    </div>
+    <div id="impStatus" class="status" hidden><div class="bar"><i id="impBar"></i></div><span id="impMsg"></span></div>
+  </div>
+</dialog>
+
+<dialog id="tiersDlg" class="sheet">
+  <header class="sheet-head"><h2>Edit ranks</h2><button class="icon" data-close aria-label="Close">✕</button></header>
+  <div class="sheet-body">
+    <div class="row"><b>Presets</b><span id="tierPresets" class="chips"></span></div>
+    <div id="tierRows"></div>
+    <div class="row"><button id="tierAdd" class="ghost">+ Add a rank</button><button id="tierSavePreset" class="ghost">Save these as a preset</button></div>
+    <details><summary>Paste a list of ranks</summary>
+      <p class="muted">One per line, optional colour after the name: <code>Soulmate #e8467c</code>. Anything goes: words, numbers, emoji.</p>
+      <textarea id="tierPaste" rows="5" placeholder="Best boy #d6a63c&#10;Great&#10;Good&#10;Skip"></textarea>
+      <button id="tierPasteGo" class="ghost">Use these ranks</button>
+    </details>
+    <label class="inline"><input type="checkbox" id="uiNumbered"> Number characters in each rank (shows their order)</label>
+    <p class="muted">Tip: double-click a rank's label on the board to rename it.</p>
+  </div>
+</dialog>
+
+<dialog id="layoutDlg" class="sheet">
+  <header class="sheet-head"><h2>Layout</h2><button class="icon" data-close aria-label="Close">✕</button></header>
+  <div class="sheet-body" id="layoutBody">
+    <label>Pool position <select data-ui="poolPos"><option value="right">Beside the board</option><option value="bottom">Below the board</option></select></label>
+    <label>Pool width <input type="range" data-ui="poolW" min="220" max="760" step="10"><output></output></label>
+    <label>Card size on the board <input type="range" data-ui="boardCard" min="40" max="180" step="2"><output></output></label>
+    <label>Card size in the pool <input type="range" data-ui="poolCard" min="36" max="160" step="2"><output></output></label>
+    <label>Rank label width <input type="range" data-ui="labelW" min="48" max="260" step="4"><output></output></label>
+    <label>Rank label text size <input type="range" data-ui="labelFs" min="12" max="48" step="1"><output></output></label>
+    <label>Venn card size <input type="range" data-ui="vennCard" min="24" max="120" step="2"><output></output></label>
+    <label>Axis chart card size <input type="range" data-ui="axisCard" min="3" max="16" step="0.5"><output></output></label>
+    <label class="inline"><input type="checkbox" data-ui="captions"> Show names on cards</label>
+    <button id="layoutReset" class="ghost">Reset layout</button>
+  </div>
+</dialog>
+
+<dialog id="exportDlg" class="sheet wide">
+  <header class="sheet-head"><h2>Export as an image</h2><button class="icon" data-close aria-label="Close">✕</button></header>
+  <div class="export-body">
+    <div class="export-opts">
+      <div><b class="side-h">Style</b><div id="exStyles" class="ex-styles"></div></div>
+      <label>Title <input id="exTitle" maxlength="80"></label>
+      <label>Subtitle <input id="exSub" maxlength="100" placeholder="optional"></label>
+      <label>Footer <input id="exFoot" maxlength="100" placeholder="optional, e.g. koilog.moe/u/you"></label>
+      <label class="rng">Title size <input type="range" id="exTitleScale" min="40" max="250" step="5"><output></output></label>
+      <label class="rng">Subtitle size <input type="range" id="exSubScale" min="40" max="250" step="5"><output></output></label>
+      <label class="rng">Space under the title <input type="range" id="exHeadGap" min="0" max="200" step="5"><output></output></label>
+      <label>Image size <select id="exSize"></select></label>
+      <div class="row">
+        <label>Card size <select id="exCard"></select></label>
+        <label>Pixel density <select id="exScale"><option value="1">1×</option><option value="1.5">1.5×</option><option value="2">2×</option><option value="2.5">2.5×</option></select></label>
+      </div>
+      <div class="row">
+        <label>Format <select id="exFmt"><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select></label>
+        <label>Names <select id="exNames"><option value="0">None</option><option value="1">Name only</option><option value="2">Name + game</option></select></label>
+      </div>
+      <label class="inline"><input type="checkbox" id="exHide" checked> Hide empty tiers</label>
+      <label class="inline"><input type="checkbox" id="exPool"> Include unranked characters</label>
+      <small id="exInfo" class="muted"></small>
+    </div>
+    <div class="export-preview"><canvas id="exCanvas"></canvas><p id="exBusy" class="muted">Drawing…</p></div>
+  </div>
+  <footer class="sheet-foot">
+    <button class="ghost" data-close>Close</button>
+    <button class="ghost" id="exCopy">Copy image</button>
+    <button class="primary" id="exSave">Download</button>
+  </footer>
+</dialog>
+
+<input type="file" id="fileIn" accept=".json,application/json" hidden>
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+<script src="export.js"></script>
+</body>
+</html>
