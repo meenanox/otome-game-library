@@ -175,6 +175,96 @@ const routeFace = (r) => {
   return (c && c.image) || "";
 };
 
+// ---------- character ranking: before playing and after ----------
+// Each route (love interest) can carry preRank and postRank: 1..N within the game. 1-3 show as gold / silver / bronze.
+const MEDALS = { 1: ["🥇", "gold", "Gold"], 2: ["🥈", "silver", "Silver"], 3: ["🥉", "bronze", "Bronze"] };
+const rankBadge = (n) => MEDALS[n] ? `<span class="medal ${MEDALS[n][1]}" title="${MEDALS[n][2]}">${MEDALS[n][0]}</span>` : `<span class="medal plain">#${n}</span>`;
+const rankChip = (label, n) => n ? `<span class="rank-chip"><small>${label}</small>${rankBadge(n)}</span>` : "";
+
+function openRankDialog(g) {
+  let dlg = $("#rankDialog");
+  if (!dlg) {
+    document.body.insertAdjacentHTML("beforeend", `<dialog id="rankDialog" class="sheet"></dialog>`);
+    dlg = $("#rankDialog");
+  }
+  const routes = g.routes || [];
+  const order = (key) => routes.map((r, i) => i).sort((a, b) => (routes[a][key] || 1e9) - (routes[b][key] || 1e9) || a - b);
+  const cols = { pre: order("preRank"), post: order("postRank") };
+  const KEY = { pre: "preRank", post: "postRank" };
+  const set = { pre: routes.some((r) => r.preRank), post: routes.some((r) => r.postRank) }; // has this list been started?
+  const TITLE = { pre: ["Before playing", "Your guess from the blurb, art and voice cast"], post: ["After playing", "Who you actually ended up loving"] };
+
+  const draw = () => {
+    const col = (k) => `
+      <section class="rank-col" data-col="${k}">
+        <h3>${TITLE[k][0]} <button type="button" class="ghost small" data-clear="${k}" ${set[k] ? "" : "disabled"}>Clear</button></h3>
+        <p class="muted">${set[k] ? TITLE[k][1] : "Drag a name or use the arrows to start this list."}</p>
+        <ol class="rank-list">${cols[k].map((ri, pos) => {
+          const r = routes[ri];
+          const was = cols.pre.indexOf(ri), delta = k === "post" && set.pre && set.post ? was - pos : 0;
+          return `<li draggable="true" data-i="${ri}">
+            <span class="rank-pos">${set[k] ? rankBadge(pos + 1) : `<span class="medal plain">–</span>`}</span>
+            <span class="route-face sm">${portraitHTML(routeFace(r), r.name)}</span>
+            <span class="rank-name"><b>${esc(r.name)}</b>${delta ? `<small class="${delta > 0 ? "up" : "down"}">${delta > 0 ? "▲" : "▼"}${Math.abs(delta)} vs before</small>` : ""}</span>
+            <button type="button" class="ghost small" data-up="${pos}" ${pos === 0 ? "disabled" : ""} aria-label="Move up">▲</button>
+            <button type="button" class="ghost small" data-down="${pos}" ${pos === cols[k].length - 1 ? "disabled" : ""} aria-label="Move down">▼</button>
+          </li>`;
+        }).join("")}</ol>
+      </section>`;
+    dlg.innerHTML = `
+      <form method="dialog">
+        <header class="sheet-head"><h2>Rank characters · ${esc(g.title)}</h2><button class="icon" type="button" data-close aria-label="Close">✕</button></header>
+        <p class="muted">Order each list from favourite (top) to least favourite. The top three get gold, silver and bronze.</p>
+        <div class="rank-cols">${col("pre")}${col("post")}</div>
+        <footer class="detail-actions"><button type="button" class="ghost spacer" data-close>Cancel</button><button type="button" class="primary" data-save>Save rankings</button></footer>
+      </form>`;
+  };
+  const move = (k, from, to) => {
+    if (to < 0 || to >= cols[k].length || from === to) return;
+    cols[k].splice(to, 0, cols[k].splice(from, 1)[0]);
+    set[k] = true;
+    draw();
+  };
+  let drag = null;
+  dlg.onclick = async (e) => {
+    if (e.target === dlg || e.target.closest("[data-close]")) return dlg.close();
+    const b = e.target.closest("button");
+    if (!b) return;
+    const k = b.closest(".rank-col")?.dataset.col;
+    if (b.dataset.up !== undefined) move(k, +b.dataset.up, +b.dataset.up - 1);
+    else if (b.dataset.down !== undefined) move(k, +b.dataset.down, +b.dataset.down + 1);
+    else if (b.dataset.clear) { set[b.dataset.clear] = false; cols[b.dataset.clear] = routes.map((r, i) => i); draw(); }
+    else if (b.hasAttribute("data-save")) {
+      for (const key of ["pre", "post"]) {
+        routes.forEach((r) => delete r[KEY[key]]);
+        if (set[key]) cols[key].forEach((ri, pos) => { routes[ri][KEY[key]] = pos + 1; });
+      }
+      try { await saveGame(g); } catch (err) { return toast(err.message, "error"); }
+      dlg.close();
+      openDetail(g.id);
+      toast("Rankings saved");
+    }
+  };
+  dlg.ondragstart = (e) => {
+    const li = e.target.closest("li[data-i]");
+    if (!li) return;
+    drag = { k: li.closest(".rank-col").dataset.col, i: +li.dataset.i };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(drag.i));
+  };
+  dlg.ondragover = (e) => { if (drag && e.target.closest(`.rank-col[data-col="${drag.k}"]`)) e.preventDefault(); };
+  dlg.ondrop = (e) => {
+    const li = e.target.closest("li[data-i]");
+    if (!drag || !li || li.closest(".rank-col").dataset.col !== drag.k) return;
+    e.preventDefault();
+    move(drag.k, cols[drag.k].indexOf(drag.i), cols[drag.k].indexOf(+li.dataset.i));
+    drag = null;
+  };
+  dlg.ondragend = () => { drag = null; };
+  draw();
+  if (!dlg.open) dlg.showModal();
+}
+
 function openDetail(id) {
   const g = state.games.find((x) => x.id === id);
   if (!g) return;
@@ -187,7 +277,8 @@ function openDetail(id) {
     <div class="route">
       <span class="route-face" data-face="${i}">${portraitHTML(routeFace(r), r.name)}</span>
       <div class="who"><b>${esc(r.name)}</b>${r.original ? `<span>${esc(r.original)}</span>` : ""}
-        ${r.seiyuu ? `<small>CV: ${esc(r.seiyuu)}</small>` : ""}</div>
+        ${r.seiyuu ? `<small>CV: ${esc(r.seiyuu)}</small>` : ""}
+        ${r.preRank || r.postRank ? `<div class="rank-chips">${rankChip("Before", r.preRank)}${rankChip("After", r.postRank)}</div>` : ""}</div>
       <div class="seg">${Object.entries(LABELS.route).map(([s, l]) =>
         `<button class="${s}" data-route="${i}" data-state="${s}" aria-pressed="${routeState(r) === s}">${l}</button>`).join("")}</div>
     </div>`).join("");
@@ -211,7 +302,8 @@ function openDetail(id) {
         ${g.notes ? `<div class="notes">${esc(g.notes)}</div>` : ""}
         ${g.description ? `<p class="desc">${esc(g.description)}</p>` : ""}
         <section class="routes">
-          <h3>Routes ${g.routes?.length ? `<small>${cleared(g)}/${g.routes.length} cleared</small>` : ""}</h3>
+          <h3>Routes ${g.routes?.length ? `<small>${cleared(g)}/${g.routes.length} cleared</small>` : ""}
+            ${g.routes?.length > 1 ? `<button class="ghost small" data-rank-open title="Rank the characters before you play and again after">🏅 Rank characters</button>` : ""}</h3>
           ${routes || `<p class="muted">No routes yet. Add love interests from Edit.</p>`}
         </section>`}
       </div>
@@ -240,6 +332,8 @@ function openDetail(id) {
         g.routes[+t.dataset.route].state = t.dataset.state;
         await saveGame(g);
         openDetail(g.id);
+      } else if (t.hasAttribute("data-rank-open")) {
+        openRankDialog(g);
       } else if (t.dataset.rate) {
         g.rating = +t.dataset.rate === g.rating ? 0 : +t.dataset.rate;
         await saveGame(g);
@@ -910,8 +1004,10 @@ $("#studyDialog").addEventListener("change", (e) => {
 
 const form = $("#editForm");
 
+// Fields the Edit form doesn't show (charId, score, tier, preRank, postRank) ride along so saving doesn't wipe them
+const ROUTE_FORM_KEYS = ["name", "original", "seiyuu", "state"];
 const routeRowHTML = (r = {}) => `
-  <div class="route-row" data-state="${esc(r.state || "none")}">
+  <div class="route-row" data-state="${esc(r.state || "none")}" data-extra="${esc(JSON.stringify(Object.fromEntries(Object.entries(r).filter(([k]) => !ROUTE_FORM_KEYS.includes(k)))))}">
     <input data-k="name" placeholder="Name" value="${esc(r.name)}">
     <input data-k="original" placeholder="日本語" value="${esc(r.original)}">
     <input data-k="seiyuu" placeholder="Seiyuu" value="${esc(r.seiyuu)}">
@@ -925,6 +1021,7 @@ function renderRoutesEdit(routes) {
 
 function readRoutesEdit() {
   return $$(".route-row", form).map((row) => ({
+    ...(() => { try { return JSON.parse(row.dataset.extra || "{}"); } catch (e) { return {}; } })(),
     name: $('[data-k="name"]', row).value.trim(),
     original: $('[data-k="original"]', row).value.trim(),
     seiyuu: $('[data-k="seiyuu"]', row).value.trim(),
@@ -995,6 +1092,7 @@ async function applyVndb(vid) {
     const d = await api("GET", `/api/vndb/vn/${encodeURIComponent(vid)}`);
     const current = readCurrentForm();
     // Keep route progress for characters already in the list
+    const oldRoutes = Object.fromEntries((current.routes || []).map((r) => [r.name, r]));
     const oldStates = Object.fromEntries((current.routes || []).map((r) => [r.name, r.state]));
     const platform = d.platforms.includes(current.platform) ? current.platform
       : (d.platforms.find((p) => LABELS.platform[p]) || current.platform);
@@ -1004,7 +1102,11 @@ async function applyVndb(vid) {
       cover: d.cover, description: d.description, platform,
       category: d.category || current.category,
       routes: d.routes.length
-        ? d.routes.map((r) => ({ ...r, state: oldStates[r.name] || "none" }))
+        ? d.routes.map((r) => {
+            const o = oldRoutes[r.name] || {};
+            return { ...r, state: oldStates[r.name] || "none",
+              ...(o.preRank ? { preRank: o.preRank } : {}), ...(o.postRank ? { postRank: o.postRank } : {}) };
+          })
         : current.routes,
     });
     form.dataset.vndbId = d.vndbId;

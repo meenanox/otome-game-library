@@ -618,3 +618,30 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); tex
 .folder-tools input[type="text"] { flex: 1 1 260px; width: auto; }
 .itch-row.has-exe { grid-template-columns: auto 48px 1fr minmax(120px, 220px); }
 .itch-row .exe-pick { max-width: 220px; font-size: .8rem; }
+
+/* ---- character ranking (before / after playing) ---- */
+.routes h3 .small { margin-left: 10px; font-size: 12px; padding: 3px 10px; font-weight: 500; }
+.rank-chips { display: flex; gap: 10px; margin-top: 3px; }
+.rank-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.medal { font-size: 16px; line-height: 1; }
+.medal.plain { font-size: 12px; font-weight: 700; color: var(--muted); min-width: 22px; display: inline-block; text-align: center; }
+.medal.gold { filter: drop-shadow(0 0 3px #f5c84288); }
+.medal.silver { filter: drop-shadow(0 0 3px #c0c8d488); }
+.medal.bronze { filter: drop-shadow(0 0 3px #cd7f3288); }
+#rankDialog { width: min(860px, 96vw); }
+.rank-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 12px 0; }
+.rank-col h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 2px; font-size: 15px; }
+.rank-col h3 .small { margin-left: auto; font-size: 12px; padding: 3px 10px; }
+.rank-col p { margin: 0 0 8px; font-size: 12px; }
+.rank-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.rank-list li { display: grid; grid-template-columns: 30px 34px 1fr auto auto; gap: 8px; align-items: center; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); cursor: grab; }
+.rank-list li:active { cursor: grabbing; }
+.rank-pos { text-align: center; }
+.route-face.sm { width: 34px; height: 44px; border-radius: 6px; }
+.rank-name { min-width: 0; }
+.rank-name b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.rank-name small.up { color: var(--st-good); }
+.rank-name small.down { color: var(--st-bad); }
+.rank-list .small { padding: 2px 8px; font-size: 11px; }
+@media (max-width: 700px) { .rank-cols { grid-template-columns: 1fr; } }
