@@ -34,6 +34,7 @@ STAFF_FILE = DATA / "staff.json"            # VNDB staff id -> voice actor recor
 GSM_LINES_DB = DATA / "gsm_lines.db"        # sentences imported from GameSentenceMiner (our own copy)
 GSM_LINKS_FILE = DATA / "gsm_links.json"    # GSM game id -> library game id (null = ignored)
 TIERLISTS_FILE = DATA / "tierlists.json"    # the user's tier lists: names, tiers (name + colour) and placements
+RANKMATCH_FILE = DATA / "rankmatch.json"    # rank-match sessions: chosen games, characters and every head-to-head answer
 RANKINGS_FILE = DATA / "rankings.json"      # the user's all-time rankings: named, ordered lists of games / routes / characters
 
 HOST = "127.0.0.1"
@@ -1554,6 +1555,28 @@ def clean_tierlists(doc):
     return {"lists": out}
 
 
+def clean_rankmatch(doc):
+    """Validate rank-match sessions from the page. Raises ValueError with something readable."""
+    sessions = doc.get("sessions") if isinstance(doc, dict) else None
+    if not isinstance(sessions, list) or len(sessions) > 100:
+        raise ValueError("Rank matches should be a list of at most 100.")
+    out, seen = [], set()
+    for s in sessions:
+        if not isinstance(s, dict) or not str(s.get("id") or ""):
+            raise ValueError("A rank match is missing its id.")
+        sid = str(s["id"])[:40]
+        if sid in seen:
+            raise ValueError("Two rank matches share an id.")
+        seen.add(sid)
+        strs = lambda v, n, m: [str(x)[:m] for x in v if isinstance(x, str) and x][:n] if isinstance(v, list) else []
+        out.append({"id": sid, "name": str(s.get("name") or "Rank match")[:80], "created": str(s.get("created") or "")[:30],
+                    "games": strs(s.get("games"), 500, 80), "chars": strs(s.get("chars"), 3000, 200),
+                    "extra": min(max(int(s.get("extra") or 0), 0), 100000) if isinstance(s.get("extra"), (int, float)) else 0,
+                    "choices": [[int(c[0]), int(c[1]), int(c[2])] for c in (s.get("choices") if isinstance(s.get("choices"), list) else [])[:100000]
+                               if isinstance(c, list) and len(c) == 3 and all(isinstance(x, (int, float)) for x in c) and -2 <= c[2] <= 2]})
+    return {"sessions": out}
+
+
 def clean_rankings(doc):
     """Validate a rankings document from the page. Raises ValueError with something readable."""
     lists = doc.get("lists") if isinstance(doc, dict) else None
@@ -1813,6 +1836,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/img":
                 dest = cached_image(query.get("u", [""])[0])
                 return self.send_file(IMG_CACHE, dest.name)
+            if path == "/api/rankmatch":
+                return self.send_json(read_json(RANKMATCH_FILE, {"sessions": []}))
             if path == "/api/rankings":
                 return self.send_json(read_json(RANKINGS_FILE, {"lists": None}))  # None: never saved, the page seeds the defaults
             if path == "/api/tierlists":
@@ -1909,6 +1934,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/rankmatch":
+            try:
+                doc = clean_rankmatch(self.read_body())
+                with lock:
+                    write_json(RANKMATCH_FILE, doc)
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
+            return self.send_json(doc)
         if path == "/api/rankings":
             try:
                 doc = clean_rankings(self.read_body())

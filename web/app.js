@@ -3127,6 +3127,240 @@ VIEWS.vas = {
   },
 };
 
+// ---------- page: Rank Match ----------
+// Pick some games, then compare their characters two at a time: "do you like the left one a lot more / more / about the
+// same / a little less / a lot less than the right one?" Each answer is worth -2..+2 points of difference. The overall
+// ranking is the set of scores that best explains all your answers (a least-squares fit), so who is "best" is
+// calculated from every comparison, not just wins. Matchups favour characters with few answers and similar scores.
+// Stored in data/rankmatch.json: {id, name, games, chars (character group ids), choices [[i, j, v]], extra}.
+
+const RM_ANSWERS = [
+  { v: 2, label: "Like a lot more" }, { v: 1, label: "Like more" }, { v: 0, label: "About the same" },
+  { v: -1, label: "Like a little less" }, { v: -2, label: "Like a lot less" },
+];
+const rmStore = { sessions: null, loading: null };
+const rmUI = { current: (() => { try { return localStorage.getItem("rankMatchCurrent") || ""; } catch (e) { return ""; } })(),
+               picking: false, pick: new Set(), q: "", category: "", name: "", showResults: false };
+
+function loadRankMatch() {
+  rmStore.loading ||= (async () => {
+    await loadPeople();
+    rmStore.sessions = (await api("GET", "/api/rankmatch").catch(() => ({ sessions: [] }))).sessions || [];
+  })();
+  return rmStore.loading;
+}
+const saveRankMatch = () => api("PUT", "/api/rankmatch", { sessions: rmStore.sessions })
+  .catch((e) => toast(`Couldn't save rank matches: ${e.message}`, "error"));
+
+/** Fit one score per character to the answers: score[i] - score[j] ≈ answer (Gauss-Seidel on least squares, with a
+ *  light pull toward 0 so a character with a single answer doesn't run away). */
+function rmScores(n, choices, rounds = 60) {
+  const s = new Array(n).fill(0);
+  const by = Array.from({ length: n }, () => []);
+  for (const [i, j, v] of choices) { by[i].push([j, v]); by[j].push([i, -v]); }
+  for (let r = 0; r < rounds; r++) {
+    for (let i = 0; i < n; i++) {
+      if (!by[i].length) continue;
+      s[i] = by[i].reduce((a, [j, v]) => a + s[j] + v, 0) / (by[i].length + 0.3);
+    }
+  }
+  return s;
+}
+
+/** Number of answers a match aims for before it calls itself finished (you can always keep going). */
+const rmTarget = (n) => Math.min(n * (n - 1) / 2, Math.max(n - 1, Math.round(n * Math.log2(Math.max(2, n)) * 0.8)));
+
+/** The next pair to ask: the character with the fewest answers, against someone they haven't met with a similar score. */
+function rmNextPair(n, choices) {
+  if (n < 2) return null;
+  const count = new Array(n).fill(0), met = new Set();
+  for (const [i, j] of choices) { count[i]++; count[j]++; met.add(i < j ? `${i}|${j}` : `${j}|${i}`); }
+  const s = rmScores(n, choices, 30);
+  const order = [...Array(n).keys()].sort((a, b) => count[a] - count[b] || a - b); // chars[] is shuffled, so this is a fair tie-break
+  for (const a of order) {
+    const opp = order.filter((b) => b !== a && !met.has(a < b ? `${a}|${b}` : `${b}|${a}`))
+      .sort((x, y) => Math.abs(s[x] - s[a]) - Math.abs(s[y] - s[a]) || count[x] - count[y]);
+    if (opp.length) return [a, opp[0]];
+  }
+  return null; // everyone has met everyone
+}
+
+function rmCharMap() {
+  const map = new Map();
+  for (const [id, ls] of groupCharacters(allLIs())) {
+    const games = [...new Set(ls.map((l) => l.g.title))];
+    map.set(id, { id, label: ls[0].name, img: ls.find((l) => l.image)?.image || ls[0].g.cover || "",
+                  sub: games.length > 2 ? `${games[0]} + ${games.length - 1} more` : games.join(" · "), gameIds: ls.map((l) => l.g.id) });
+  }
+  return map;
+}
+
+function renderRankMatch(host) {
+  const chars = rmCharMap();
+  const sessions = rmStore.sessions;
+  const cur = sessions.find((s) => s.id === rmUI.current);
+  const info = (id) => chars.get(id) || { label: "(no longer in your library)", img: "", sub: "" };
+  const remember = (id) => { rmUI.current = id; try { localStorage.setItem("rankMatchCurrent", id); } catch (e) {} };
+  const redraw = () => renderRankMatch(host);
+  rmKeys.handler = null;
+
+  if (rmUI.picking || !cur) {
+    // ----- new match: choose games -----
+    const needle = rmUI.q.trim().toLowerCase();
+    const games = state.games.filter((g) => (g.routes || []).length && (!rmUI.category || g.category === rmUI.category)
+      && (!needle || [g.title, g.originalTitle].some((s) => (s || "").toLowerCase().includes(needle))))
+      .sort((a, b) => a.title.localeCompare(b.title));
+    const picked = rmUI.pick;
+    const n = [...chars.values()].filter((c) => c.gameIds.some((id) => picked.has(id))).length;
+    host.innerHTML = `
+      <h2 class="page-h">Rank Match</h2>
+      ${sessions.length ? `<p><button type="button" class="ghost" data-rm="list">← My rank matches</button></p>` : ""}
+      <p class="muted">Pick the games whose characters you want to rank. You'll compare two characters at a time, and the overall ranking is worked out from all your answers.</p>
+      <div class="filters page-filters">
+        <div class="filter-group"><b>Category</b>
+          <button class="chip" data-rmcat="" aria-pressed="${!rmUI.category}">All</button>
+          ${Object.entries(LABELS.category).map(([k, l]) => `<button class="chip" data-rmcat="${k}" aria-pressed="${rmUI.category === k}">${l}</button>`).join("")}
+        </div>
+        <input id="rmSearch" type="search" placeholder="Search games…" value="${esc(rmUI.q)}">
+        <button type="button" class="ghost small" data-rm="all">Select shown</button>
+        <button type="button" class="ghost small" data-rm="none">Clear</button>
+      </div>
+      <div class="rm-games">${games.map((g) => `
+        <button type="button" class="rm-game" data-rmgame="${esc(g.id)}" aria-pressed="${picked.has(g.id)}">
+          <span class="rm-cover">${portraitHTML(g.cover, g.title)}</span><b>${esc(g.title)}</b><small>${g.routes.length} characters</small>
+        </button>`).join("") || `<p class="empty">No games with characters match.</p>`}</div>
+      <div class="rm-start">
+        <input id="rmName" placeholder="Name this match (optional)" value="${esc(rmUI.name)}">
+        <span class="muted">${picked.size} game${picked.size === 1 ? "" : "s"} · ${n} characters · about ${rmTarget(n)} comparisons</span>
+        <button type="button" class="primary" data-rm="start" ${n < 2 ? "disabled" : ""}>Start ranking</button>
+      </div>`;
+    host.querySelector("#rmSearch").oninput = (e) => {
+      rmUI.q = e.target.value; const p = e.target.selectionStart; redraw();
+      const el = host.querySelector("#rmSearch"); el.focus(); el.setSelectionRange(p, p);
+    };
+    host.querySelector("#rmName").oninput = (e) => { rmUI.name = e.target.value; };
+    host.onclick = async (e) => {
+      const cat = e.target.closest("[data-rmcat]"), gm = e.target.closest("[data-rmgame]"), b = e.target.closest("[data-rm]");
+      if (cat) { rmUI.category = cat.dataset.rmcat; return redraw(); }
+      if (gm) { const id = gm.dataset.rmgame; picked.has(id) ? picked.delete(id) : picked.add(id); return redraw(); }
+      if (!b) return;
+      if (b.dataset.rm === "all") { games.forEach((g) => picked.add(g.id)); redraw(); }
+      else if (b.dataset.rm === "none") { picked.clear(); redraw(); }
+      else if (b.dataset.rm === "list") { rmUI.picking = false; redraw(); }
+      else if (b.dataset.rm === "start") {
+        const ids = [...chars.values()].filter((c) => c.gameIds.some((id) => picked.has(id))).map((c) => c.id);
+        for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
+        const titles = [...picked].map((id) => state.games.find((g) => g.id === id)?.title).filter(Boolean);
+        const s = { id: "rm-" + Date.now().toString(36), name: rmUI.name.trim() || (titles.slice(0, 2).join(" + ") + (titles.length > 2 ? ` + ${titles.length - 2} more` : "")),
+                    created: new Date().toISOString(), games: [...picked], chars: ids, choices: [], extra: 0 };
+        sessions.unshift(s);
+        remember(s.id); rmUI.picking = false; rmUI.showResults = false; rmUI.name = ""; rmUI.pick = new Set();
+        await saveRankMatch();
+        redraw();
+      }
+    };
+    return;
+  }
+
+  const n = cur.chars.length;
+  const target = rmTarget(n) + (cur.extra || 0);
+  const pair = rmNextPair(n, cur.choices);
+  const finished = !pair || cur.choices.length >= target;
+  const showResults = finished || rmUI.showResults;
+  const pct = Math.min(100, Math.round(cur.choices.length / Math.max(1, target) * 100));
+  const answer = async (v) => { cur.choices.push([pair[0], pair[1], v]); await saveRankMatch(); redraw(); };
+  const undo = async () => { if (!cur.choices.length) return; cur.choices.pop(); await saveRankMatch(); redraw(); };
+  const card = (c) => `<div class="rm-card"><b>${esc(c.label)}</b><span class="rm-face">${portraitHTML(c.img, c.label)}</span><small>${esc(c.sub)}</small></div>`;
+
+  let body;
+  if (showResults) {
+    const sc = rmScores(n, cur.choices);
+    const asked = new Array(n).fill(0);
+    for (const [i, j] of cur.choices) { asked[i]++; asked[j]++; }
+    const order = [...Array(n).keys()].sort((a, b) => sc[b] - sc[a] || asked[b] - asked[a]);
+    const top = Math.max(...sc.map(Math.abs), 1);
+    let rank = 0;
+    const rows = order.map((v, i) => {
+      if (!(i > 0 && Math.abs(sc[order[i - 1]] - sc[v]) < 0.005)) rank = i + 1;
+      const c = info(cur.chars[v]);
+      const pctBar = Math.round(50 + sc[v] / top * 50);
+      return `<li><span class="rank-pos">${rankBadge(rank)}</span><span class="route-face sm">${portraitHTML(c.img, c.label)}</span>
+        <span class="rank-name"><b>${esc(c.label)}</b><small class="muted">${esc(c.sub)} · ${asked[v]} comparison${asked[v] === 1 ? "" : "s"}</small></span>
+        <span class="rm-score" title="Score from your answers"><i style="width:${pctBar}%"></i><em>${(sc[v] >= 0 ? "+" : "") + sc[v].toFixed(2)}</em></span></li>`;
+    });
+    const best = info(cur.chars[order[0]]);
+    body = `${cur.choices.length ? `<div class="rm-best"><span class="rm-face big">${portraitHTML(best.img, best.label)}</span>
+        <div><small class="muted">${finished ? "Your overall best" : "Best so far"}</small><h3>${esc(best.label)}</h3><small class="muted">${esc(best.sub)}</small></div></div>` : ""}
+      <p class="muted">Scores are fitted to all ${cur.choices.length} of your answers (a lot more = +2 … a lot less = −2), so one lucky win doesn't decide it.</p>
+      <ol class="rm-result">${rows.join("")}</ol>`;
+  } else {
+    const a = info(cur.chars[pair[0]]), b = info(cur.chars[pair[1]]);
+    body = `<h3 class="rm-title">Battle #${cur.choices.length + 1}<br><small>${pct}% sorted.</small></h3>
+      <p class="rm-q">Compared to <b>${esc(b.label)}</b>, how much do you like <b>${esc(a.label)}</b>?</p>
+      <div class="rm-arena">${card(a)}
+        <div class="rm-mid">${RM_ANSWERS.map((x, k) => `<button type="button" class="rm-ans v${x.v}" data-ans="${x.v}">${x.label}<kbd>${k + 1}</kbd></button>`).join("")}</div>
+        ${card(b)}</div>
+      <p class="muted rm-hint">Keys 1–5 answer · Backspace undo</p>`;
+  }
+  host.innerHTML = `
+    <h2 class="page-h">Rank Match <small>${esc(cur.name)}</small></h2>
+    <div class="rm-bar">
+      <button type="button" class="ghost small" data-rm="list">← All matches</button>
+      <button type="button" class="ghost small" data-rm="undo" ${cur.choices.length ? "" : "disabled"}>↶ Undo</button>
+      ${finished ? `<button type="button" class="ghost small" data-rm="more" ${pair ? "" : "disabled"}>Keep going (+${Math.max(5, Math.round(n / 2))})</button>`
+        : showResults ? `<button type="button" class="ghost small" data-rm="battle">Back to battles</button>`
+        : `<button type="button" class="ghost small" data-rm="results" ${cur.choices.length ? "" : "disabled"}>Show ranking now</button>`}
+      <button type="button" class="ghost small" data-rm="delete">Delete</button>
+      <select id="rmSwitch" aria-label="Switch match">${sessions.map((s) => `<option value="${esc(s.id)}" ${s.id === cur.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
+      <button type="button" class="ghost small" data-rm="new">＋ New match</button>
+    </div>
+    <div class="rm-progress"><i style="width:${pct}%"></i></div>
+    ${body}`;
+  host.querySelector("#rmSwitch").onchange = (e) => { remember(e.target.value); rmUI.showResults = false; redraw(); };
+  host.onclick = async (e) => {
+    const p = e.target.closest("[data-ans]"), b = e.target.closest("[data-rm]");
+    if (p) return answer(+p.dataset.ans);
+    if (!b) return;
+    const act = b.dataset.rm;
+    if (act === "undo") undo();
+    else if (act === "results") { rmUI.showResults = true; redraw(); }
+    else if (act === "battle") { rmUI.showResults = false; redraw(); }
+    else if (act === "more") { cur.extra = (cur.extra || 0) + Math.max(5, Math.round(n / 2)); rmUI.showResults = false; await saveRankMatch(); redraw(); }
+    else if (act === "list" || act === "new") { rmUI.picking = true; rmUI.pick = new Set(); redraw(); }
+    else if (act === "delete") {
+      if (!confirm(`Delete “${cur.name}” and its ${cur.choices.length} answers?`)) return;
+      rmStore.sessions = sessions.filter((s) => s !== cur);
+      remember(rmStore.sessions[0]?.id || "");
+      await saveRankMatch();
+      rmUI.picking = !rmStore.sessions.length;
+      redraw();
+    }
+  };
+  if (!showResults) rmKeys.handler = (e) => {
+    const k = { 1: 2, 2: 1, 3: 0, 4: -1, 5: -2 }[e.key];
+    if (k !== undefined) { e.preventDefault(); answer(k); } else if (e.key === "Backspace") { e.preventDefault(); undo(); }
+  };
+}
+
+// one keyboard listener for the page; it only acts while the Rank Match page is open and no dialog covers it
+const rmKeys = { handler: null };
+document.addEventListener("keydown", (e) => {
+  if (currentView !== "rankmatch" || !rmKeys.handler || document.querySelector("dialog[open]")) return;
+  if (e.target.closest("input, select, textarea")) return;
+  rmKeys.handler(e);
+});
+
+VIEWS.rankmatch = {
+  async render(host) {
+    host.innerHTML = `<h2 class="page-h">Rank Match</h2><p class="empty">Loading…</p>`;
+    await loadRankMatch();
+    if (currentView !== "rankmatch") return;
+    if (!rmStore.sessions.length) rmUI.picking = true;
+    else if (!rmStore.sessions.some((s) => s.id === rmUI.current)) rmUI.current = rmStore.sessions[0].id;
+    renderRankMatch(host);
+  },
+};
+
 $("#themeBtn").onclick = () => {
   const cur = document.documentElement.dataset.theme;
   setTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);

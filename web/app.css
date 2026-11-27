@@ -660,3 +660,43 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); tex
 .console.switch { background: #e4363f; }
 .console.ps4 { background: #2a4fa8; }
 .console.pc { background: #4a5568; }
+
+/* ---- rank match ---- */
+.rm-games { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin: 12px 0; }
+.rm-game { display: grid; gap: 4px; justify-items: center; text-align: center; padding: 8px; border: 2px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); cursor: pointer; font: inherit; }
+.rm-game[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.rm-game b { font-size: 12px; line-height: 1.25; }
+.rm-game small { color: var(--muted); }
+.rm-cover { width: 70px; height: 92px; border-radius: 8px; overflow: hidden; display: grid; place-items: center; background: var(--surface-2); }
+.rm-cover img { width: 100%; height: 100%; object-fit: cover; }
+.rm-start { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+.rm-start input { flex: 1 1 200px; }
+.rm-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.rm-bar select { max-width: 240px; }
+.rm-progress { height: 6px; border-radius: 4px; background: var(--surface-2); overflow: hidden; margin-bottom: 14px; }
+.rm-progress i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+.rm-title { text-align: center; margin: 6px 0; font-size: 22px; }
+.rm-title small { font-size: 16px; font-weight: 500; color: var(--muted); }
+.rm-q { text-align: center; margin: 4px 0 12px; }
+.rm-arena { display: grid; grid-template-columns: 1fr minmax(170px, 230px) 1fr; gap: 14px; align-items: stretch; max-width: 820px; margin: 0 auto; }
+.rm-card { display: grid; justify-items: center; align-content: start; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); text-align: center; }
+.rm-card b { font-size: 20px; font-family: "Cormorant Garamond", serif; }
+.rm-face { width: 100%; max-width: 200px; aspect-ratio: 1; border-radius: 10px; overflow: hidden; display: grid; place-items: center; background: var(--surface-2); }
+.rm-face img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.rm-face.big { width: 84px; flex: none; }
+.rm-mid { display: grid; gap: 8px; align-content: center; }
+.rm-ans { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 12px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.rm-ans:hover { border-color: var(--accent); background: var(--accent-soft); }
+.rm-ans.v2 { border-left: 5px solid var(--st-good); } .rm-ans.v1 { border-left: 5px solid #9bd2b4; }
+.rm-ans.v0 { border-left: 5px solid var(--st-none); }
+.rm-ans.v-1 { border-left: 5px solid #e4a3ab; } .rm-ans.v-2 { border-left: 5px solid var(--st-bad); }
+.rm-ans kbd { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+.rm-hint { text-align: center; font-size: 12px; }
+.rm-best { display: flex; gap: 16px; align-items: center; padding: 14px; border: 2px solid var(--accent); border-radius: 14px; background: var(--accent-soft); margin-bottom: 10px; }
+.rm-best h3 { margin: 2px 0; font-size: 26px; font-family: "Cormorant Garamond", serif; }
+.rm-result { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 6px; }
+.rm-result li { display: grid; grid-template-columns: 36px 34px 1fr minmax(90px, 160px); gap: 10px; align-items: center; padding: 6px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.rm-score { position: relative; height: 20px; border-radius: 6px; background: var(--surface-2); overflow: hidden; }
+.rm-score i { position: absolute; inset: 0 auto 0 0; background: var(--accent-soft); border-right: 2px solid var(--accent); }
+.rm-score em { position: relative; font-style: normal; font-size: 12px; padding-left: 6px; line-height: 20px; }
+@media (max-width: 700px) { .rm-arena { grid-template-columns: 1fr 1fr; } .rm-mid { grid-column: 1 / -1; grid-row: 2; } }
